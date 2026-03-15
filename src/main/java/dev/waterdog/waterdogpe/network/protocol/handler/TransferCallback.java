@@ -52,6 +52,7 @@ public class TransferCallback {
     private final ServerInfo targetServer;
     private final ServerInfo sourceServer;
     private final int targetDimension;
+    private final int sourceDimension;
 
     private volatile TransferPhase transferPhase = PHASE_1;
 
@@ -61,6 +62,7 @@ public class TransferCallback {
         this.targetServer = connection.getServerInfo();
         this.sourceServer = sourceServer;
         this.targetDimension = targetDimension;
+        this.sourceDimension = player.getRewriteData().getDimension();
     }
 
     public boolean onDimChangeSuccess() {
@@ -111,15 +113,18 @@ public class TransferCallback {
             return;
         }
 
+        // 阶段1开始前清理
+        injectRemoveAllEffects(this.player.getConnection(), rewriteData.getEntityId(), this.player.getProtocol());
+        injectClearWeather(this.player.getConnection());
+
         injectEntityImmobile(this.player.getConnection(), rewriteData.getEntityId(), true);
 
-        // 所有维度都按“相同维度逻辑”强制 flip（你的核心要求）
-        int tempDimension = determineDimensionId(this.targetDimension, this.targetDimension);
+        // 修复：使用构造时保存的源维度
+        int tempDimension = determineDimensionId(this.sourceDimension, this.targetDimension);
 
-        // 保留你的自定义日志（完全匹配你现在的格式）
         this.player.getLogger().info("[ " + this.player.getName() + " ] Starting fast transfer to " 
                 + this.targetServer.getServerName() 
-                + " (oldDim=" + rewriteData.getDimension() 
+                + " (oldDim=" + this.sourceDimension 
                 + ", targetDim=" + this.targetDimension 
                 + ", fakeDim=" + tempDimension + ")");
 
@@ -136,7 +141,7 @@ public class TransferCallback {
                 true
         );
 
-        // 额外清理（杀残留效果/天气，减少假实体概率）
+        // 阶段1结束后再次清理
         injectClearWeather(this.player.getConnection());
         injectRemoveAllEffects(this.player.getConnection(), rewriteData.getEntityId(), this.player.getProtocol());
     }
@@ -156,6 +161,10 @@ public class TransferCallback {
         }
 
         try {
+            // 阶段2开始前清理
+            injectRemoveAllEffects(this.player.getConnection(), rewriteData.getEntityId(), this.player.getProtocol());
+            injectClearWeather(this.player.getConnection());
+
             StopSoundPacket soundPacket = new StopSoundPacket();
             soundPacket.setSoundName("portal.travel");
             soundPacket.setStoppingAllSound(true);
@@ -168,8 +177,6 @@ public class TransferCallback {
                     rewriteData.getEntityId()
             );
 
-            // === fasttrans 维度快速纠正（解决假实体关键！）===
-            // 无论 fallback 还是正常 phase2，都把维度切回真实 target
             rewriteData.setDimension(this.targetDimension);
             injectDimensionChange(
                     this.player.getConnection(),
@@ -177,9 +184,12 @@ public class TransferCallback {
                     rewriteData.getSpawnPosition(),
                     rewriteData.getEntityId(),
                     this.player.getProtocol(),
-                    false   // fast：不重复发 chunks
+                    false
             );
-            // === 结束 ===
+
+            // 阶段2维度切换后再次清理
+            injectRemoveAllEffects(this.player.getConnection(), rewriteData.getEntityId(), this.player.getProtocol());
+            injectClearWeather(this.player.getConnection());
 
             if (!this.connection.isConnected()) {
                 this.onTransferFailed();
@@ -209,6 +219,9 @@ public class TransferCallback {
                 this.connection.disconnect();
                 return false;
             }
+
+            // 传送完成后最终清理
+            injectRemoveAllEffects(this.player.getConnection(), rewriteData.getEntityId(), this.player.getProtocol());
 
             return true;
         } catch (Throwable t) {
