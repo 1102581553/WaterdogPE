@@ -31,6 +31,7 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.objects.ObjectSet;
 import lombok.extern.log4j.Log4j2;
+import org.cloudburstmc.math.vector.Vector3f;
 import org.cloudburstmc.protocol.bedrock.packet.ClientToServerHandshakePacket;
 import org.cloudburstmc.protocol.bedrock.packet.DisconnectPacket;
 import org.cloudburstmc.protocol.bedrock.packet.LevelChunkPacket;
@@ -51,8 +52,10 @@ import java.util.Base64;
 import java.util.Collection;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.determineDimensionId;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectChunkCacheBlobs;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectClearWeather;
+import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectDimensionChange;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectGameMode;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectGameRules;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectPosition;
@@ -245,34 +248,107 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
 
         int sourceDimension = rewriteData.getDimension();
         int targetDimension = packet.getDimensionId();
+        int newDimension = determineDimensionId(sourceDimension, targetDimension);
 
         TransferCallback transferCallback = new TransferCallback(
                 this.player,
                 this.connection,
                 oldConnection.getServerInfo(),
-                sourceDimension,
                 targetDimension
         );
-
-        rewriteData.setDimension(targetDimension);
+        rewriteData.setDimension(newDimension);
         rewriteData.setTransferCallback(transferCallback);
 
-        log.info(
-                "[{}] Starting transfer without ChangeDimensionPacket to {} (oldDim={}, targetDim={})",
-                this.player.getName(),
-                this.connection.getServerInfo().getServerName(),
-                sourceDimension,
-                targetDimension
-        );
+        boolean fastTransfer = event.isTransferScreenAllowed() && newDimension != targetDimension;
 
-        injectPosition(
-                this.player.getConnection(),
-                packet.getPlayerPosition(),
-                packet.getRotation(),
-                rewriteData.getEntityId()
-        );
+        if (fastTransfer) {
+            Vector3f fakePosition = packet.getPlayerPosition().add(2000, 0, 2000);
 
-        transferCallback.onDimChangeSuccess();
+            log.info(
+                    "[{}] Starting fast transfer to {} (sourceDim={}, fakeDim={}, targetDim={})",
+                    this.player.getName(),
+                    this.connection.getServerInfo().getServerName(),
+                    sourceDimension,
+                    newDimension,
+                    targetDimension
+            );
+
+            injectPosition(
+                    this.player.getConnection(),
+                    fakePosition,
+                    packet.getRotation(),
+                    rewriteData.getEntityId()
+            );
+
+            this.player.getConnection().setTransferQueueActive(true);
+
+            injectDimensionChange(
+                    this.player.getConnection(),
+                    newDimension,
+                    fakePosition,
+                    rewriteData.getEntityId(),
+                    this.player.getProtocol(),
+                    true
+            );
+
+            // 保留 Waterdog 原版的第一阶段屏幕退出逻辑
+            this.player.getProxy().getScheduler().scheduleDelayed(() -> {
+                PlayStatusPacket statusPacket = new PlayStatusPacket();
+                statusPacket.setStatus(PlayStatusPacket.Status.PLAYER_SPAWN);
+                this.player.getConnection().sendPacketImmediately(statusPacket);
+            }, 40);
+
+        } else if (newDimension == targetDimension) {
+            // 官方原版：跨不同维度时直接发一次真实目标维度切换
+            log.info(
+                    "[{}] Starting direct transfer to {} (sourceDim={}, targetDim={})",
+                    this.player.getName(),
+                    this.connection.getServerInfo().getServerName(),
+                    sourceDimension,
+                    targetDimension
+            );
+
+            injectPosition(
+                    this.player.getConnection(),
+                    packet.getPlayerPosition(),
+                    packet.getRotation(),
+                    rewriteData.getEntityId()
+            );
+
+            injectDimensionChange(
+                    this.player.getConnection(),
+                    newDimension,
+                    packet.getPlayerPosition(),
+                    rewriteData.getEntityId(),
+                    this.player.getProtocol(),
+                    false
+            );
+
+            // 保持官方的两阶段语义
+            transferCallback.onDimChangeSuccess();
+
+        } else {
+            // 官方原版：不走 transfer screen 时，模拟两次维度切换完成流程
+            log.info(
+                    "[{}] Starting simulated transfer to {} (sourceDim={}, fakeDim={}, targetDim={})",
+                    this.player.getName(),
+                    this.connection.getServerInfo().getServerName(),
+                    sourceDimension,
+                    newDimension,
+                    targetDimension
+            );
+
+            injectPosition(
+                    this.player.getConnection(),
+                    packet.getPlayerPosition(),
+                    packet.getRotation(),
+                    rewriteData.getEntityId()
+            );
+
+            rewriteData.setDimension(targetDimension);
+            transferCallback.onDimChangeSuccess();
+            transferCallback.onDimChangeSuccess();
+        }
 
         return Signals.CANCEL;
     }
