@@ -70,6 +70,8 @@ import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.i
 @Log4j2
 public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
 
+    private volatile boolean bdsFallbackScheduled = false;
+
     public SwitchDownstreamHandler(ProxiedPlayer player, ClientConnection connection) {
         super(player, connection);
     }
@@ -116,14 +118,7 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
     @Override
     public PacketSignal handle(PlayStatusPacket packet) {
         if (packet.getStatus() == PlayStatusPacket.Status.PLAYER_SPAWN) {
-            if (this.tryCompleteTransfer("downstream PLAYER_SPAWN", true)) {
-                log.info(
-                        "[{}] Completed transfer using downstream PLAYER_SPAWN from {}",
-                        this.player.getName(),
-                        this.connection.getServerInfo().getServerName()
-                );
-                return Signals.CANCEL;
-            }
+            this.scheduleBdsFallbackCompletion("downstream PLAYER_SPAWN");
         }
 
         return this.onPlayStatus(packet, message -> {
@@ -138,25 +133,12 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
 
     @Override
     public PacketSignal handle(NetworkChunkPublisherUpdatePacket packet) {
-        if (this.tryCompleteTransfer("downstream NetworkChunkPublisherUpdate", false)) {
-            log.info(
-                    "[{}] Completed transfer using NetworkChunkPublisherUpdate from {}",
-                    this.player.getName(),
-                    this.connection.getServerInfo().getServerName()
-            );
-        }
         return PacketSignal.UNHANDLED;
     }
 
     @Override
     public PacketSignal handle(LevelChunkPacket packet) {
-        if (this.tryCompleteTransfer("downstream LevelChunk", false)) {
-            log.info(
-                    "[{}] Completed transfer using first LevelChunk from {}",
-                    this.player.getName(),
-                    this.connection.getServerInfo().getServerName()
-            );
-        }
+        this.scheduleBdsFallbackCompletion("downstream LevelChunk");
         return PacketSignal.UNHANDLED;
     }
 
@@ -195,6 +177,8 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
             );
             return Signals.CANCEL;
         }
+
+        this.bdsFallbackScheduled = false;
 
         ClientConnection oldConnection = this.player.getDownstreamConnection();
         oldConnection.getServerInfo().removeConnection(oldConnection);
@@ -259,9 +243,6 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
 
         this.connection.sendPacket(this.player.getLoginData().getChunkRadius());
 
-        // Client does not accept ChangeDimensionPacket when dimension is same as current dimension.
-        // If we transfer between same dimensions we are attempting to do dimension change sequence which uses 2 dim changes.
-        // After client successfully changes dimension we receive PlayerActionPacket#DIMENSION_CHANGE_SUCCESS and continue in transfer.
         int newDimension = determineDimensionId(rewriteData.getDimension(), packet.getDimensionId());
         TransferCallback transferCallback = new TransferCallback(
                 this.player,
@@ -354,8 +335,40 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
         return Signals.CANCEL;
     }
 
-    private boolean tryCompleteTransfer(String reason, boolean firePostTransferEvent) {
+    private void scheduleBdsFallbackCompletion(String reason) {
         TransferCallback transferCallback = this.player.getRewriteData().getTransferCallback();
-        return transferCallback != null && transferCallback.onServerReadySignal(reason, firePostTransferEvent);
+        if (transferCallback == null || transferCallback.getPhase() != TransferCallback.TransferPhase.PHASE_2) {
+            return;
+        }
+
+        if (this.bdsFallbackScheduled) {
+            return;
+        }
+        this.bdsFallbackScheduled = true;
+
+        log.info(
+                "[{}] Scheduling fallback transfer completion using {} from {}",
+                this.player.getName(),
+                reason,
+                this.connection.getServerInfo().getServerName()
+        );
+
+        this.player.getProxy().getScheduler().scheduleDelayed(() -> {
+            try {
+                TransferCallback callback = this.player.getRewriteData().getTransferCallback();
+                if (callback != null && this.player.isConnected() && this.connection.isConnected()) {
+                    if (callback.onServerReadySignal(reason)) {
+                        log.info(
+                                "[{}] Completed transfer using {} from {}",
+                                this.player.getName(),
+                                reason,
+                                this.connection.getServerInfo().getServerName()
+                        );
+                    }
+                }
+            } finally {
+                this.bdsFallbackScheduled = false;
+            }
+        }, 1);
     }
 }
