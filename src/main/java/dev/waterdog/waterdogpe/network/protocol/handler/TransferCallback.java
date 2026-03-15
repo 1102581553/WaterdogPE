@@ -36,6 +36,8 @@ import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.d
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectDimensionChange;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectEntityImmobile;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectPosition;
+import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectClearWeather;
+import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectRemoveAllEffects;
 
 public class TransferCallback {
 
@@ -82,11 +84,6 @@ public class TransferCallback {
         return true;
     }
 
-    /**
-     * BDS compatibility fallback:
-     * If downstream is already sending world data but the client does not deliver
-     * the second DIMENSION_CHANGE_SUCCESS in time, allow PHASE_2 to finish.
-     */
     public boolean onServerReadySignal(String reason) {
         if (this.transferPhase != PHASE_2) {
             return false;
@@ -107,10 +104,6 @@ public class TransferCallback {
         return true;
     }
 
-    /**
-     * 【你的核心要求】所有维度都按“相同维度逻辑”处理
-     * 无论 dim0→dim0、dim1→dim0、dim0→dim1……全部强制走清理
-     */
     private void onTransferPhase1Completed() {
         RewriteData rewriteData = this.player.getRewriteData();
 
@@ -120,10 +113,15 @@ public class TransferCallback {
 
         injectEntityImmobile(this.player.getConnection(), rewriteData.getEntityId(), true);
 
-        // === 强制相同维度效果（永远 flip）===
-        // determineDimensionId(target, target) = 永远返回对立维度（0<->1）
-        // 这样 dim1→dim0 也和 dim0→dim0 一样触发完整实体卸载
+        // 所有维度都按“相同维度逻辑”强制 flip（你的核心要求）
         int tempDimension = determineDimensionId(this.targetDimension, this.targetDimension);
+
+        // 保留你的自定义日志（完全匹配你现在的格式）
+        this.player.getLogger().info("[ " + this.player.getName() + " ] Starting fast transfer to " 
+                + this.targetServer.getServerName() 
+                + " (oldDim=" + rewriteData.getDimension() 
+                + ", targetDim=" + this.targetDimension 
+                + ", fakeDim=" + tempDimension + ")");
 
         Vector3f fakePosition = rewriteData.getSpawnPosition().add(-2000, 0, -2000);
         injectPosition(this.player.getConnection(), fakePosition, rewriteData.getRotation(), rewriteData.getEntityId());
@@ -135,9 +133,12 @@ public class TransferCallback {
                 rewriteData.getSpawnPosition(),
                 rewriteData.getEntityId(),
                 this.player.getProtocol(),
-                true   // 发送 empty chunks + ACK
+                true
         );
-        // === 改动结束 ===
+
+        // 额外清理（杀残留效果/天气，减少假实体概率）
+        injectClearWeather(this.player.getConnection());
+        injectRemoveAllEffects(this.player.getConnection(), rewriteData.getEntityId(), this.player.getProtocol());
     }
 
     private boolean completeTransferPhase2() {
@@ -158,18 +159,7 @@ public class TransferCallback {
             StopSoundPacket soundPacket = new StopSoundPacket();
             soundPacket.setSoundName("portal.travel");
             soundPacket.setStoppingAllSound(true);
-
-            if (this.player.isConnected()) {
-                this.player.sendPacketImmediately(soundPacket);
-            } else {
-                this.connection.disconnect();
-                return false;
-            }
-
-            if (!this.player.isConnected()) {
-                this.connection.disconnect();
-                return false;
-            }
+            this.player.sendPacketImmediately(soundPacket);
 
             injectPosition(
                     this.player.getConnection(),
@@ -178,8 +168,8 @@ public class TransferCallback {
                     rewriteData.getEntityId()
             );
 
-            // === fasttrans 维度快速纠正（phase2）===
-            // 把维度切回真实 targetDimension，不发多余 empty chunks
+            // === fasttrans 维度快速纠正（解决假实体关键！）===
+            // 无论 fallback 还是正常 phase2，都把维度切回真实 target
             rewriteData.setDimension(this.targetDimension);
             injectDimensionChange(
                     this.player.getConnection(),
@@ -187,7 +177,7 @@ public class TransferCallback {
                     rewriteData.getSpawnPosition(),
                     rewriteData.getEntityId(),
                     this.player.getProtocol(),
-                    false   // false = 超快，不重复发 chunks
+                    false   // fast：不重复发 chunks
             );
             // === 结束 ===
 
