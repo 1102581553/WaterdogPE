@@ -51,10 +51,8 @@ import java.util.Base64;
 import java.util.Collection;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.determineDimensionId;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectChunkCacheBlobs;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectClearWeather;
-import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectDimensionChange;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectGameMode;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectGameRules;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectPosition;
@@ -245,7 +243,6 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
 
         int sourceDimension = rewriteData.getDimension();
         int targetDimension = packet.getDimensionId();
-        int newDimension = determineDimensionId(sourceDimension, targetDimension);
 
         TransferCallback transferCallback = new TransferCallback(
                 this.player,
@@ -255,11 +252,11 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
                 targetDimension
         );
 
-        rewriteData.setDimension(newDimension);
+        rewriteData.setDimension(targetDimension);
         rewriteData.setTransferCallback(transferCallback);
 
         log.info(
-                "[{}] Starting direct transfer to {} (oldDim={}, targetDim={})",
+                "[{}] Starting transfer without ChangeDimensionPacket to {} (oldDim={}, targetDim={})",
                 this.player.getName(),
                 this.connection.getServerInfo().getServerName(),
                 sourceDimension,
@@ -271,15 +268,6 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
                 packet.getPlayerPosition(),
                 packet.getRotation(),
                 rewriteData.getEntityId()
-        );
-
-        injectDimensionChange(
-                this.player.getConnection(),
-                targetDimension,
-                packet.getPlayerPosition(),
-                rewriteData.getEntityId(),
-                this.player.getProtocol(),
-                false
         );
 
         transferCallback.onDimChangeSuccess();
