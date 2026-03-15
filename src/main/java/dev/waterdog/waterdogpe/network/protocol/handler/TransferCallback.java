@@ -25,12 +25,14 @@ import dev.waterdog.waterdogpe.network.protocol.rewrite.types.RewriteData;
 import dev.waterdog.waterdogpe.network.serverinfo.ServerInfo;
 import dev.waterdog.waterdogpe.player.ProxiedPlayer;
 import dev.waterdog.waterdogpe.utils.types.TranslationContainer;
+import org.cloudburstmc.math.vector.Vector3f;
 import org.cloudburstmc.protocol.bedrock.packet.SetLocalPlayerAsInitializedPacket;
 import org.cloudburstmc.protocol.bedrock.packet.StopSoundPacket;
 
 import static dev.waterdog.waterdogpe.network.protocol.handler.TransferCallback.TransferPhase.PHASE_1;
 import static dev.waterdog.waterdogpe.network.protocol.handler.TransferCallback.TransferPhase.PHASE_2;
 import static dev.waterdog.waterdogpe.network.protocol.handler.TransferCallback.TransferPhase.RESET;
+import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.determineDimensionId;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectClearWeather;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectDimensionChange;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectEntityImmobile;
@@ -49,8 +51,6 @@ public class TransferCallback {
     private final ClientConnection connection;
     private final ServerInfo targetServer;
     private final ServerInfo sourceServer;
-    private final int sourceDimension;
-    private final int fakeDimension;
     private final int targetDimension;
 
     private volatile TransferPhase transferPhase = PHASE_1;
@@ -59,16 +59,12 @@ public class TransferCallback {
             ProxiedPlayer player,
             ClientConnection connection,
             ServerInfo sourceServer,
-            int sourceDimension,
-            int fakeDimension,
             int targetDimension
     ) {
         this.player = player;
         this.connection = connection;
         this.targetServer = connection.getServerInfo();
         this.sourceServer = sourceServer;
-        this.sourceDimension = sourceDimension;
-        this.fakeDimension = fakeDimension;
         this.targetDimension = targetDimension;
     }
 
@@ -124,29 +120,37 @@ public class TransferCallback {
         injectClearWeather(this.player.getConnection());
         injectEntityImmobile(this.player.getConnection(), rewriteData.getEntityId(), true);
 
-        this.player.getLogger().info(
-                "[" + this.player.getName() + "] Phase 2 transfer to "
-                        + this.targetServer.getServerName()
-                        + " (sourceDim=" + this.sourceDimension
-                        + ", fakeDim=" + this.fakeDimension
-                        + ", targetDim=" + this.targetDimension + ")"
-        );
+        // 官方原版逻辑：
+        // 如果当前已经是目标维度，说明第一步已经直接切到了目标维度，不需要第二次 ChangeDimension。
+        if (rewriteData.getDimension() == this.targetDimension) {
+            return;
+        }
 
+        Vector3f fakePosition = rewriteData.getSpawnPosition().add(-2000, 0, -2000);
         injectPosition(
                 this.player.getConnection(),
-                rewriteData.getSpawnPosition(),
+                fakePosition,
                 rewriteData.getRotation(),
                 rewriteData.getEntityId()
         );
 
-        rewriteData.setDimension(this.targetDimension);
+        int nextDimension = determineDimensionId(rewriteData.getDimension(), this.targetDimension);
+        rewriteData.setDimension(nextDimension);
+
+        this.player.getLogger().info(
+                "[" + this.player.getName() + "] Phase 2 transfer to "
+                        + this.targetServer.getServerName()
+                        + " (currentDim=" + nextDimension
+                        + ", targetDim=" + this.targetDimension + ")"
+        );
+
         injectDimensionChange(
                 this.player.getConnection(),
-                this.targetDimension,
+                rewriteData.getDimension(),
                 rewriteData.getSpawnPosition(),
                 rewriteData.getEntityId(),
                 this.player.getProtocol(),
-                false
+                true
         );
 
         injectClearWeather(this.player.getConnection());
@@ -183,11 +187,6 @@ public class TransferCallback {
                     rewriteData.getEntityId()
             );
 
-            rewriteData.setDimension(this.targetDimension);
-
-            injectRemoveAllEffects(this.player.getConnection(), rewriteData.getEntityId(), this.player.getProtocol());
-            injectClearWeather(this.player.getConnection());
-
             if (!this.connection.isConnected()) {
                 this.onTransferFailed();
                 return false;
@@ -218,6 +217,7 @@ public class TransferCallback {
             }
 
             injectRemoveAllEffects(this.player.getConnection(), rewriteData.getEntityId(), this.player.getProtocol());
+            injectClearWeather(this.player.getConnection());
             return true;
         } catch (Throwable t) {
             this.player.getLogger().warning(
