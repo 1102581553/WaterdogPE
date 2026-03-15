@@ -134,7 +134,6 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
 
     @Override
     public PacketSignal handle(NetworkChunkPublisherUpdatePacket packet) {
-        // 不要用这个包做 fallback 触发，它来得过早。
         return PacketSignal.UNHANDLED;
     }
 
@@ -245,18 +244,23 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
 
         this.connection.sendPacket(this.player.getLoginData().getChunkRadius());
 
-        int newDimension = determineDimensionId(rewriteData.getDimension(), packet.getDimensionId());
+        // 关键修复：先保存真实源维度，再计算临时维度
+        int sourceDimension = rewriteData.getDimension();
+        int targetDimension = packet.getDimensionId();
+        int newDimension = determineDimensionId(sourceDimension, targetDimension);
+
         TransferCallback transferCallback = new TransferCallback(
                 this.player,
                 this.connection,
                 oldConnection.getServerInfo(),
-                packet.getDimensionId()
+                sourceDimension,
+                targetDimension
         );
 
         rewriteData.setDimension(newDimension);
         rewriteData.setTransferCallback(transferCallback);
 
-        boolean fastTransfer = event.isTransferScreenAllowed() && newDimension != packet.getDimensionId();
+        boolean fastTransfer = event.isTransferScreenAllowed() && newDimension != targetDimension;
 
         if (fastTransfer) {
             Vector3f fakePosition = packet.getPlayerPosition().add(2000, 0, 2000);
@@ -265,8 +269,8 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
                     "[{}] Starting fast transfer to {} (oldDim={}, targetDim={}, fakeDim={})",
                     this.player.getName(),
                     this.connection.getServerInfo().getServerName(),
-                    rewriteData.getDimension(),
-                    packet.getDimensionId(),
+                    sourceDimension,
+                    targetDimension,
                     newDimension
             );
 
@@ -288,7 +292,6 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
                     true
             );
 
-            // 不主动伪造 PLAYER_SPAWN，只记录 watchdog 日志。
             this.player.getProxy().getScheduler().scheduleDelayed(() -> {
                 TransferCallback callback = this.player.getRewriteData().getTransferCallback();
                 if (callback != null) {
@@ -301,7 +304,7 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
                 }
             }, 40);
 
-        } else if (newDimension == packet.getDimensionId()) {
+        } else if (newDimension == targetDimension) {
             injectPosition(
                     this.player.getConnection(),
                     packet.getPlayerPosition(),
@@ -328,7 +331,7 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
                     rewriteData.getEntityId()
             );
 
-            rewriteData.setDimension(packet.getDimensionId());
+            rewriteData.setDimension(targetDimension);
             transferCallback.onDimChangeSuccess();
             transferCallback.onDimChangeSuccess();
         }
@@ -364,10 +367,10 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
         }
 
         log.info(
-                "[{}] Scheduling fallback transfer completion using {} from {}",
-                this.player.getName(),
-                reason,
-                this.connection.getServerInfo().getServerName()
+            "[{}] Scheduling fallback transfer completion using {} from {}",
+            this.player.getName(),
+            reason,
+            this.connection.getServerInfo().getServerName()
         );
 
         this.player.getProxy().getScheduler().scheduleDelayed(() -> {
@@ -378,10 +381,10 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
                         && this.connection.isConnected()) {
                     if (callback.onServerReadySignal(reason)) {
                         log.info(
-                                "[{}] Completed transfer using {} from {}",
-                                this.player.getName(),
-                                reason,
-                                this.connection.getServerInfo().getServerName()
+                            "[{}] Completed transfer using {} from {}",
+                            this.player.getName(),
+                            reason,
+                            this.connection.getServerInfo().getServerName()
                         );
                     }
                 }
