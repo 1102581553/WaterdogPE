@@ -110,6 +110,10 @@ public class TransferCallback {
     private void onTransferPhase1Completed() {
         RewriteData rewriteData = this.player.getRewriteData();
 
+        if (!this.player.isConnected()) {
+            return;
+        }
+
         injectEntityImmobile(this.player.getConnection(), rewriteData.getEntityId(), true);
 
         if (rewriteData.getDimension() == this.targetDimension) {
@@ -134,42 +138,80 @@ public class TransferCallback {
         RewriteData rewriteData = this.player.getRewriteData();
         rewriteData.setTransferCallback(null);
 
-        StopSoundPacket soundPacket = new StopSoundPacket();
-        soundPacket.setSoundName("portal.travel");
-        soundPacket.setStoppingAllSound(true);
-        this.player.sendPacketImmediately(soundPacket);
-
-        injectPosition(
-                this.player.getConnection(),
-                rewriteData.getSpawnPosition(),
-                rewriteData.getRotation(),
-                rewriteData.getEntityId()
-        );
+        if (!this.player.isConnected()) {
+            this.connection.disconnect();
+            return false;
+        }
 
         if (!this.connection.isConnected()) {
             this.onTransferFailed();
             return false;
         }
 
-        SetLocalPlayerAsInitializedPacket initializedPacket = new SetLocalPlayerAsInitializedPacket();
-        initializedPacket.setRuntimeEntityId(this.player.getRewriteData().getOriginalEntityId());
-        this.connection.sendPacket(initializedPacket);
+        try {
+            StopSoundPacket soundPacket = new StopSoundPacket();
+            soundPacket.setSoundName("portal.travel");
+            soundPacket.setStoppingAllSound(true);
 
-        this.connection.setPacketHandler(new ConnectedDownstreamHandler(this.player, this.connection));
+            if (this.player.isConnected()) {
+                this.player.sendPacketImmediately(soundPacket);
+            } else {
+                this.connection.disconnect();
+                return false;
+            }
 
-        if (this.player.getConnection().getPacketHandler() instanceof ConnectedUpstreamHandler handler) {
-            handler.setTargetConnection(this.connection);
+            if (!this.player.isConnected()) {
+                this.connection.disconnect();
+                return false;
+            }
+
+            injectPosition(
+                    this.player.getConnection(),
+                    rewriteData.getSpawnPosition(),
+                    rewriteData.getRotation(),
+                    rewriteData.getEntityId()
+            );
+
+            if (!this.connection.isConnected()) {
+                this.onTransferFailed();
+                return false;
+            }
+
+            SetLocalPlayerAsInitializedPacket initializedPacket = new SetLocalPlayerAsInitializedPacket();
+            initializedPacket.setRuntimeEntityId(this.player.getRewriteData().getOriginalEntityId());
+            this.connection.sendPacket(initializedPacket);
+
+            this.connection.setPacketHandler(new ConnectedDownstreamHandler(this.player, this.connection));
+
+            if (this.player.getConnection().getPacketHandler() instanceof ConnectedUpstreamHandler handler) {
+                handler.setTargetConnection(this.connection);
+            }
+
+            this.player.getConnection().setTransferQueueActive(false);
+
+            TransferCompleteEvent event = new TransferCompleteEvent(this.sourceServer, this.connection, this.player);
+            this.player.getProxy().getEventManager().callEvent(event);
+
+            this.player.armTransferSettleWindow();
+
+            if (this.player.isConnected()) {
+                this.player.flushQueuedTransfer();
+            } else {
+                this.connection.disconnect();
+                return false;
+            }
+
+            return true;
+        } catch (Throwable t) {
+            this.player.getLogger().warning(
+                    "Failed to finalize transfer of " + this.player.getName()
+                            + " to " + this.targetServer.getServerName()
+                            + ": " + t.getMessage()
+            );
+
+            this.connection.disconnect();
+            return false;
         }
-
-        this.player.getConnection().setTransferQueueActive(false);
-
-        TransferCompleteEvent event = new TransferCompleteEvent(this.sourceServer, this.connection, this.player);
-        this.player.getProxy().getEventManager().callEvent(event);
-
-        this.player.armTransferSettleWindow();
-        this.player.flushQueuedTransfer();
-
-        return true;
     }
 
     public void onTransferFailed() {
