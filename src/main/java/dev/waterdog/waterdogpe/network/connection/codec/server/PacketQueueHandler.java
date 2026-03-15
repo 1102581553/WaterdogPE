@@ -1,24 +1,26 @@
 package dev.waterdog.waterdogpe.network.connection.codec.server;
 
-import dev.waterdog.waterdogpe.network.NetworkMetrics;
 import dev.waterdog.waterdogpe.network.connection.codec.batch.BatchFlags;
 import dev.waterdog.waterdogpe.network.connection.peer.BedrockServerSession;
-import io.netty.channel.ChannelDuplexHandler;
+import dev.waterdog.waterdogpe.network.metrics.NetworkMetrics;  // 注意这个包
+import io.netty.channel.ChannelOutboundHandlerAdapter;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import io.netty.util.internal.PlatformDependent;
-import lombok.extern.log4j.Log4j2;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.cloudburstmc.protocol.bedrock.netty.BedrockBatchWrapper;
 
 import java.util.Queue;
 
-@Log4j2
-public class PacketQueueHandler extends ChannelDuplexHandler {
+public class PacketQueueHandler extends ChannelOutboundHandlerAdapter {
     public static final String NAME = "packet-queue-handler";
 
-    // === 这里加大上限，解决你的 WARN ===
-    private static final int MAX_BATCHES = 1024;   // 原 256
-    private static final int MAX_PACKETS = 25000;  // 原 8000 → 现在超大世界也不会触发
+    // === 加大上限，够大世界用，永远不触发 WARN ===
+    private static final int MAX_BATCHES = 1024;
+    private static final int MAX_PACKETS = 25000;
+
+    private static final Logger log = LogManager.getLogger(PacketQueueHandler.class);
 
     private final BedrockServerSession session;
     private int packetCounter = 0;
@@ -50,7 +52,7 @@ public class PacketQueueHandler extends ChannelDuplexHandler {
         }
 
         if (send) {
-            ctx.flush();
+            ctx.flush();   // 必须无条件 flush
         }
     }
 
