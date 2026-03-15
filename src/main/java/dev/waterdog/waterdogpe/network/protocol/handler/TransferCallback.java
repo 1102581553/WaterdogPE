@@ -28,49 +28,128 @@ import dev.waterdog.waterdogpe.utils.types.TranslationContainer;
 import org.cloudburstmc.protocol.bedrock.packet.SetLocalPlayerAsInitializedPacket;
 import org.cloudburstmc.protocol.bedrock.packet.StopSoundPacket;
 
+import static dev.waterdog.waterdogpe.network.protocol.handler.TransferCallback.TransferPhase.PHASE_1;
+import static dev.waterdog.waterdogpe.network.protocol.handler.TransferCallback.TransferPhase.PHASE_2;
+import static dev.waterdog.waterdogpe.network.protocol.handler.TransferCallback.TransferPhase.RESET;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectClearWeather;
+import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectDimensionChange;
+import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectEntityImmobile;
+import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectPosition;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectRemoveAllEffects;
 
 public class TransferCallback {
+
+    public enum TransferPhase {
+        RESET,
+        PHASE_1,
+        PHASE_2
+    }
 
     private final ProxiedPlayer player;
     private final ClientConnection connection;
     private final ServerInfo targetServer;
     private final ServerInfo sourceServer;
+    private final int sourceDimension;
+    private final int targetDimension;
 
-    private volatile boolean completed = false;
+    private volatile TransferPhase transferPhase = PHASE_1;
 
     public TransferCallback(
             ProxiedPlayer player,
             ClientConnection connection,
-            ServerInfo sourceServer
+            ServerInfo sourceServer,
+            int sourceDimension,
+            int targetDimension
     ) {
         this.player = player;
         this.connection = connection;
         this.targetServer = connection.getServerInfo();
         this.sourceServer = sourceServer;
+        this.sourceDimension = sourceDimension;
+        this.targetDimension = targetDimension;
+    }
+
+    public boolean onDimChangeSuccess() {
+        switch (this.transferPhase) {
+            case PHASE_1:
+                this.onTransferPhase1Completed();
+                this.transferPhase = PHASE_2;
+                break;
+
+            case PHASE_2:
+                if (!this.completeTransferPhase2()) {
+                    this.transferPhase = RESET;
+                    return false;
+                }
+                this.transferPhase = RESET;
+                break;
+
+            default:
+                return false;
+        }
+        return true;
     }
 
     public boolean onServerReadySignal(String reason) {
-        if (this.completed) {
+        if (this.transferPhase != PHASE_2) {
             return false;
         }
 
         this.player.getLogger().info(
                 "Completing transfer of " + this.player.getName()
                         + " to " + this.targetServer.getServerName()
-                        + " using signal: " + reason
+                        + " using fallback signal: " + reason
         );
 
-        if (!this.completeTransfer()) {
+        if (!this.completeTransferPhase2()) {
+            this.transferPhase = RESET;
             return false;
         }
 
-        this.completed = true;
+        this.transferPhase = RESET;
         return true;
     }
 
-    private boolean completeTransfer() {
+    private void onTransferPhase1Completed() {
+        RewriteData rewriteData = this.player.getRewriteData();
+
+        if (!this.player.isConnected()) {
+            return;
+        }
+
+        injectRemoveAllEffects(this.player.getConnection(), rewriteData.getEntityId(), this.player.getProtocol());
+        injectClearWeather(this.player.getConnection());
+        injectEntityImmobile(this.player.getConnection(), rewriteData.getEntityId(), true);
+
+        this.player.getLogger().info(
+                "[" + this.player.getName() + "] Transfer phase 1 completed to "
+                        + this.targetServer.getServerName()
+                        + " (oldDim=" + this.sourceDimension
+                        + ", targetDim=" + this.targetDimension + ")"
+        );
+
+        injectPosition(
+                this.player.getConnection(),
+                rewriteData.getSpawnPosition(),
+                rewriteData.getRotation(),
+                rewriteData.getEntityId()
+        );
+
+        rewriteData.setDimension(this.targetDimension);
+        injectDimensionChange(
+                this.player.getConnection(),
+                this.targetDimension,
+                rewriteData.getSpawnPosition(),
+                rewriteData.getEntityId(),
+                this.player.getProtocol(),
+                false
+        );
+
+        injectClearWeather(this.player.getConnection());
+        injectRemoveAllEffects(this.player.getConnection(), rewriteData.getEntityId(), this.player.getProtocol());
+    }
+
+    private boolean completeTransferPhase2() {
         RewriteData rewriteData = this.player.getRewriteData();
         rewriteData.setTransferCallback(null);
 
@@ -92,6 +171,26 @@ public class TransferCallback {
             soundPacket.setSoundName("portal.travel");
             soundPacket.setStoppingAllSound(true);
             this.player.sendPacketImmediately(soundPacket);
+
+            injectPosition(
+                    this.player.getConnection(),
+                    rewriteData.getSpawnPosition(),
+                    rewriteData.getRotation(),
+                    rewriteData.getEntityId()
+            );
+
+            rewriteData.setDimension(this.targetDimension);
+            injectDimensionChange(
+                    this.player.getConnection(),
+                    this.targetDimension,
+                    rewriteData.getSpawnPosition(),
+                    rewriteData.getEntityId(),
+                    this.player.getProtocol(),
+                    false
+            );
+
+            injectRemoveAllEffects(this.player.getConnection(), rewriteData.getEntityId(), this.player.getProtocol());
+            injectClearWeather(this.player.getConnection());
 
             if (!this.connection.isConnected()) {
                 this.onTransferFailed();
@@ -162,7 +261,7 @@ public class TransferCallback {
         );
     }
 
-    public boolean isCompleted() {
-        return this.completed;
+    public TransferPhase getPhase() {
+        return this.transferPhase;
     }
 }
