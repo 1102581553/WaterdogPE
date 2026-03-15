@@ -1,6 +1,5 @@
 package dev.waterdog.waterdogpe.network.connection.codec.server;
 
-import dev.waterdog.waterdogpe.network.NetworkMetrics;
 import dev.waterdog.waterdogpe.network.connection.codec.batch.BatchFlags;
 import dev.waterdog.waterdogpe.network.connection.peer.BedrockServerSession;
 import io.netty.channel.ChannelDuplexHandler;
@@ -15,13 +14,9 @@ import java.util.Queue;
 @Log4j2
 public class PacketQueueHandler extends ChannelDuplexHandler {
     public static final String NAME = "packet-queue-handler";
-    private static final int MAX_BATCHES = 256;
-    private static final int MAX_PACKETS = 8000;
 
     private final BedrockServerSession session;
-
-    private int packetCounter = 0;
-    private final Queue<BedrockBatchWrapper> queue = PlatformDependent.newMpscQueue(MAX_BATCHES);
+    private final Queue<BedrockBatchWrapper> queue = PlatformDependent.newMpscQueue();
 
     private volatile boolean finished;
 
@@ -40,15 +35,17 @@ public class PacketQueueHandler extends ChannelDuplexHandler {
         }
 
         BedrockBatchWrapper batch;
+        boolean wrote = false;
         while ((batch = this.queue.poll()) != null) {
             if (send) {
                 ctx.write(batch);
+                wrote = true;
             } else {
                 batch.release();
             }
         }
 
-        if (send) {
+        if (send && wrote) {
             ctx.flush();
         }
     }
@@ -70,17 +67,6 @@ public class PacketQueueHandler extends ChannelDuplexHandler {
             return;
         }
 
-        if (this.queue.offer(batch) && this.packetCounter < MAX_PACKETS) {
-            this.packetCounter += batch.getPackets().size();
-        } else {
-            log.warn("[{}] has reached maximum transfer queue capacity: batches={} packets={}", this.session.getSocketAddress(), this.queue.size(), this.packetCounter);
-            this.finish(ctx, false);
-            this.session.disconnect("Transfer queue got too large");
-
-            NetworkMetrics metrics = ctx.channel().attr(NetworkMetrics.ATTRIBUTE).get();
-            if (metrics != null) {
-                metrics.packetQueueTooLarge();
-            }
-        }
+        this.queue.offer(batch);
     }
 }
