@@ -15,37 +15,39 @@
 
 package dev.waterdog.waterdogpe.player;
 
-import dev.waterdog.waterdogpe.network.connection.codec.compression.CompressionType;
-import dev.waterdog.waterdogpe.network.connection.handler.ReconnectReason;
-import dev.waterdog.waterdogpe.network.connection.peer.BedrockServerSession;
-import dev.waterdog.waterdogpe.network.connection.client.ClientConnection;
-import dev.waterdog.waterdogpe.network.protocol.handler.PluginPacketHandler;
-import dev.waterdog.waterdogpe.network.protocol.handler.downstream.CompressionInitHandler;
-import dev.waterdog.waterdogpe.network.protocol.user.LoginData;
-import dev.waterdog.waterdogpe.network.protocol.user.Platform;
-import dev.waterdog.waterdogpe.network.protocol.handler.downstream.InitialHandler;
-import dev.waterdog.waterdogpe.network.protocol.handler.downstream.SwitchDownstreamHandler;
-import lombok.Getter;
-import lombok.Setter;
-import org.cloudburstmc.protocol.bedrock.data.ScoreInfo;
-import org.cloudburstmc.protocol.bedrock.data.command.CommandOriginData;
-import org.cloudburstmc.protocol.bedrock.data.command.CommandOriginType;
-import org.cloudburstmc.protocol.bedrock.packet.*;
 import dev.waterdog.waterdogpe.ProxyServer;
 import dev.waterdog.waterdogpe.command.CommandSender;
 import dev.waterdog.waterdogpe.event.defaults.*;
 import dev.waterdog.waterdogpe.logger.MainLogger;
-import dev.waterdog.waterdogpe.network.serverinfo.ServerInfo;
+import dev.waterdog.waterdogpe.network.connection.client.ClientConnection;
+import dev.waterdog.waterdogpe.network.connection.codec.compression.CompressionType;
+import dev.waterdog.waterdogpe.network.connection.handler.ReconnectReason;
+import dev.waterdog.waterdogpe.network.connection.peer.BedrockServerSession;
 import dev.waterdog.waterdogpe.network.protocol.ProtocolVersion;
+import dev.waterdog.waterdogpe.network.protocol.handler.PluginPacketHandler;
+import dev.waterdog.waterdogpe.network.protocol.handler.TransferCallback;
+import dev.waterdog.waterdogpe.network.protocol.handler.downstream.CompressionInitHandler;
+import dev.waterdog.waterdogpe.network.protocol.handler.downstream.InitialHandler;
+import dev.waterdog.waterdogpe.network.protocol.handler.downstream.SwitchDownstreamHandler;
+import dev.waterdog.waterdogpe.network.protocol.handler.upstream.ConnectedUpstreamHandler;
+import dev.waterdog.waterdogpe.network.protocol.handler.upstream.ResourcePacksHandler;
 import dev.waterdog.waterdogpe.network.protocol.rewrite.RewriteMaps;
 import dev.waterdog.waterdogpe.network.protocol.rewrite.types.RewriteData;
-import dev.waterdog.waterdogpe.network.protocol.handler.upstream.ResourcePacksHandler;
-import dev.waterdog.waterdogpe.network.protocol.handler.upstream.ConnectedUpstreamHandler;
+import dev.waterdog.waterdogpe.network.protocol.user.LoginData;
+import dev.waterdog.waterdogpe.network.protocol.user.Platform;
+import dev.waterdog.waterdogpe.network.serverinfo.ServerInfo;
 import dev.waterdog.waterdogpe.utils.types.Permission;
 import dev.waterdog.waterdogpe.utils.types.TextContainer;
 import dev.waterdog.waterdogpe.utils.types.TranslationContainer;
 import it.unimi.dsi.fastutil.longs.*;
 import it.unimi.dsi.fastutil.objects.*;
+import lombok.Getter;
+import lombok.Setter;
+import org.cloudburstmc.protocol.bedrock.BedrockPacketHandler;
+import org.cloudburstmc.protocol.bedrock.data.ScoreInfo;
+import org.cloudburstmc.protocol.bedrock.data.command.CommandOriginData;
+import org.cloudburstmc.protocol.bedrock.data.command.CommandOriginType;
+import org.cloudburstmc.protocol.bedrock.packet.*;
 import org.cloudburstmc.protocol.common.util.Preconditions;
 
 import java.net.InetSocketAddress;
@@ -97,7 +99,6 @@ public class ProxiedPlayer implements CommandSender {
     private ClientConnection pendingConnection;
     private volatile ServerInfo queuedTransferTarget;
     private volatile long transferSettleUntilNanos = 0L;
-
 
     /**
      *  Whether this player should have administrator status.
@@ -415,7 +416,7 @@ public class ProxiedPlayer implements CommandSender {
      *
      * @param oldServer server from which was player disconnected.
      * @param reason    disconnected reason.
-     * @param message    disconnected message.
+     * @param message   disconnected message.
      * @return if connection to downstream was successful.
      */
     public boolean sendToFallback(ServerInfo oldServer, ReconnectReason reason, String message) {
@@ -484,7 +485,6 @@ public class ProxiedPlayer implements CommandSender {
         }
     }
 
-
     /**
      * Submethod for sending a TranslationContainer to the player's chat window, translates the container and sends the result as a string
      *
@@ -497,7 +497,7 @@ public class ProxiedPlayer implements CommandSender {
     /**
      * Sends a message to the player, which will be displayed in the chat window
      *
-     * @param message
+     * @param message message text
      */
     @Override
     public void sendMessage(String message) {
@@ -813,7 +813,6 @@ public class ProxiedPlayer implements CommandSender {
     private synchronized void setPendingConnection(ClientConnection connection) {
         this.pendingConnection = connection;
     }
-
 
     public boolean isTransferBusy() {
         if (this.clientConnection == null) {
