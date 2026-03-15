@@ -31,6 +31,7 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.objects.ObjectSet;
 import lombok.extern.log4j.Log4j2;
+import org.cloudburstmc.math.vector.Vector3f;
 import org.cloudburstmc.protocol.bedrock.packet.ClientToServerHandshakePacket;
 import org.cloudburstmc.protocol.bedrock.packet.DisconnectPacket;
 import org.cloudburstmc.protocol.bedrock.packet.LevelChunkPacket;
@@ -51,8 +52,10 @@ import java.util.Base64;
 import java.util.Collection;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.determineDimensionId;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectChunkCacheBlobs;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectClearWeather;
+import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectDimensionChange;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectGameMode;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectGameRules;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectPosition;
@@ -243,34 +246,48 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
 
         int sourceDimension = rewriteData.getDimension();
         int targetDimension = packet.getDimensionId();
+        int fakeDimension = determineDimensionId(sourceDimension, targetDimension);
 
         TransferCallback transferCallback = new TransferCallback(
                 this.player,
                 this.connection,
                 oldConnection.getServerInfo(),
                 sourceDimension,
+                fakeDimension,
                 targetDimension
         );
 
-        rewriteData.setDimension(targetDimension);
+        rewriteData.setDimension(fakeDimension);
         rewriteData.setTransferCallback(transferCallback);
 
+        Vector3f fakePosition = packet.getPlayerPosition().add(2000, 0, 2000);
+
         log.info(
-                "[{}] Starting transfer without ChangeDimensionPacket to {} (oldDim={}, targetDim={})",
+                "[{}] Starting fast transfer to {} (sourceDim={}, fakeDim={}, targetDim={})",
                 this.player.getName(),
                 this.connection.getServerInfo().getServerName(),
                 sourceDimension,
+                fakeDimension,
                 targetDimension
         );
 
+        this.player.getConnection().setTransferQueueActive(true);
+
         injectPosition(
                 this.player.getConnection(),
-                packet.getPlayerPosition(),
+                fakePosition,
                 packet.getRotation(),
                 rewriteData.getEntityId()
         );
 
-        transferCallback.onDimChangeSuccess();
+        injectDimensionChange(
+                this.player.getConnection(),
+                fakeDimension,
+                fakePosition,
+                rewriteData.getEntityId(),
+                this.player.getProtocol(),
+                true
+        );
 
         return Signals.CANCEL;
     }
