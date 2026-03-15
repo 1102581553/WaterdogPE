@@ -32,7 +32,6 @@ import static dev.waterdog.waterdogpe.network.protocol.handler.TransferCallback.
 import static dev.waterdog.waterdogpe.network.protocol.handler.TransferCallback.TransferPhase.PHASE_2;
 import static dev.waterdog.waterdogpe.network.protocol.handler.TransferCallback.TransferPhase.RESET;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectClearWeather;
-import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectDimensionChange;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectEntityImmobile;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectPosition;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectRemoveAllEffects;
@@ -122,7 +121,7 @@ public class TransferCallback {
         injectEntityImmobile(this.player.getConnection(), rewriteData.getEntityId(), true);
 
         this.player.getLogger().info(
-                "[" + this.player.getName() + "] Transfer phase 1 completed to "
+                "[" + this.player.getName() + "] Transfer phase 1 prepared for "
                         + this.targetServer.getServerName()
                         + " (oldDim=" + this.sourceDimension
                         + ", targetDim=" + this.targetDimension + ")"
@@ -136,14 +135,6 @@ public class TransferCallback {
         );
 
         rewriteData.setDimension(this.targetDimension);
-        injectDimensionChange(
-                this.player.getConnection(),
-                this.targetDimension,
-                rewriteData.getSpawnPosition(),
-                rewriteData.getEntityId(),
-                this.player.getProtocol(),
-                false
-        );
 
         injectClearWeather(this.player.getConnection());
         injectRemoveAllEffects(this.player.getConnection(), rewriteData.getEntityId(), this.player.getProtocol());
@@ -180,14 +171,6 @@ public class TransferCallback {
             );
 
             rewriteData.setDimension(this.targetDimension);
-            injectDimensionChange(
-                    this.player.getConnection(),
-                    this.targetDimension,
-                    rewriteData.getSpawnPosition(),
-                    rewriteData.getEntityId(),
-                    this.player.getProtocol(),
-                    false
-            );
 
             injectRemoveAllEffects(this.player.getConnection(), rewriteData.getEntityId(), this.player.getProtocol());
             injectClearWeather(this.player.getConnection());
