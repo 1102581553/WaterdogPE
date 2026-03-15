@@ -100,7 +100,7 @@ public abstract class Command {
 
     protected CommandOverloadData[] buildCommandOverloads() {
         CommandParamData simpleData = new CommandParamData();
-        simpleData.setName(this.name);
+        simpleData.setName("args");
         simpleData.setOptional(true);
         simpleData.setType(CommandParam.TEXT);
         return new CommandOverloadData[]{new CommandOverloadData(false, new CommandParamData[]{simpleData})};
