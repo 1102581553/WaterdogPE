@@ -50,6 +50,7 @@ import java.net.URI;
 import java.security.interfaces.ECPublicKey;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.determineDimensionId;
 import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectChunkCacheBlobs;
@@ -70,7 +71,7 @@ import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.i
 @Log4j2
 public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
 
-    private volatile boolean bdsFallbackScheduled = false;
+    private final AtomicBoolean bdsFallbackScheduled = new AtomicBoolean(false);
 
     public SwitchDownstreamHandler(ProxiedPlayer player, ClientConnection connection) {
         super(player, connection);
@@ -133,8 +134,7 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
 
     @Override
     public PacketSignal handle(NetworkChunkPublisherUpdatePacket packet) {
-        // 先不要用这个包做 fallback 触发。
-        // 它来得太早，之前已经验证过会把 BDS transfer 提前完成并导致会话异常。
+        // 不要用这个包做 fallback 触发，它来得过早。
         return PacketSignal.UNHANDLED;
     }
 
@@ -180,7 +180,7 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
             return Signals.CANCEL;
         }
 
-        this.bdsFallbackScheduled = false;
+        this.bdsFallbackScheduled.set(false);
 
         ClientConnection oldConnection = this.player.getDownstreamConnection();
         oldConnection.getServerInfo().removeConnection(oldConnection);
@@ -217,7 +217,7 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
         }
         bossbars.clear();
 
-        Collection playerList = this.player.getPlayers();
+        Collection<?> playerList = this.player.getPlayers();
         injectRemoveAllPlayers(this.player.getConnection(), playerList);
         playerList.clear();
 
@@ -227,11 +227,11 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
         }
         entities.clear();
 
-        Long2ObjectMap scoreInfos = this.player.getScoreInfos();
+        Long2ObjectMap<?> scoreInfos = this.player.getScoreInfos();
         injectRemoveScoreInfos(this.player.getConnection(), scoreInfos);
         scoreInfos.clear();
 
-        ObjectSet scoreboards = this.player.getScoreboards();
+        ObjectSet<?> scoreboards = this.player.getScoreboards();
         for (Object scoreboard : scoreboards) {
             injectRemoveObjective(this.player.getConnection(), String.valueOf(scoreboard));
         }
@@ -288,11 +288,7 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
                     true
             );
 
-            // 这里非常关键：
-            // 原版/之前的补丁会在 40 tick 后给客户端 sendPacketImmediately 一个假的 PLAYER_SPAWN。
-            // 从你最新日志看，崩溃时间点正好对上这个定时任务。
-            // 对 BDS 场景先彻底禁用它，只保留真实的 downstream ready 信号来完成 phase2。
-
+            // 不主动伪造 PLAYER_SPAWN，只记录 watchdog 日志。
             this.player.getProxy().getScheduler().scheduleDelayed(() -> {
                 TransferCallback callback = this.player.getRewriteData().getTransferCallback();
                 if (callback != null) {
@@ -363,10 +359,9 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
             return;
         }
 
-        if (this.bdsFallbackScheduled) {
+        if (!this.bdsFallbackScheduled.compareAndSet(false, true)) {
             return;
         }
-        this.bdsFallbackScheduled = true;
 
         log.info(
                 "[{}] Scheduling fallback transfer completion using {} from {}",
@@ -378,7 +373,9 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
         this.player.getProxy().getScheduler().scheduleDelayed(() -> {
             try {
                 TransferCallback callback = this.player.getRewriteData().getTransferCallback();
-                if (callback != null && this.player.isConnected() && this.connection.isConnected()) {
+                if (callback != null
+                        && this.player.isConnected()
+                        && this.connection.isConnected()) {
                     if (callback.onServerReadySignal(reason)) {
                         log.info(
                                 "[{}] Completed transfer using {} from {}",
@@ -389,7 +386,7 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
                     }
                 }
             } finally {
-                this.bdsFallbackScheduled = false;
+                this.bdsFallbackScheduled.set(false);
             }
         }, 1);
     }
