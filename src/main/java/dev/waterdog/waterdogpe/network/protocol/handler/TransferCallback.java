@@ -120,6 +120,7 @@ public class TransferCallback {
     }
 
     public void onTransferFailed() {
+        this.player.getRewriteData().setTransferCallback(null);
         if (this.player.sendToFallback(this.targetServer, ReconnectReason.TRANSFER_FAILED, "Disconnected")) {
             this.player.sendMessage(new TranslationContainer("waterdog.connected.fallback", this.targetServer.getServerName()));
         } else {
