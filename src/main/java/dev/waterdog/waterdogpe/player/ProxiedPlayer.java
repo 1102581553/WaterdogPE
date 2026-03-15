@@ -47,6 +47,7 @@ import org.cloudburstmc.protocol.bedrock.data.ScoreInfo;
 import org.cloudburstmc.protocol.bedrock.data.command.CommandOriginData;
 import org.cloudburstmc.protocol.bedrock.data.command.CommandOriginType;
 import org.cloudburstmc.protocol.bedrock.packet.*;
+import org.cloudburstmc.protocol.common.PacketHandler;
 import org.cloudburstmc.protocol.common.util.Preconditions;
 
 import java.net.InetSocketAddress;
@@ -134,7 +135,7 @@ public class ProxiedPlayer implements CommandSender {
     private volatile boolean acceptItemComponentPacket = true;
     /**
      * Additional downstream and upstream handlers can be set by plugin.
-     * Do not set directly BedrockPacketHandler to sessions!
+     * Do not set directly packet handlers to sessions!
      */
     @Getter
     private final Collection<PluginPacketHandler> pluginPacketHandlers = new ObjectArrayList<>();
@@ -173,7 +174,7 @@ public class ProxiedPlayer implements CommandSender {
                 return;
             }
 
-            if (!this.isConnected() || this.disconnectReason != null) { // player might have disconnected itself
+            if (!this.isConnected() || this.disconnectReason != null) {
                 this.disconnect(this.disconnectReason == null ? "Already disconnected" : this.disconnectReason);
                 return;
             }
@@ -191,7 +192,6 @@ public class ProxiedPlayer implements CommandSender {
         PlayerResourcePackInfoSendEvent event = new PlayerResourcePackInfoSendEvent(this, packet);
         this.proxy.getEventManager().callEvent(event);
         if (event.isCancelled()) {
-            // Connect player to downstream without sending ResourcePacksInfoPacket
             this.acceptResourcePacks = false;
             this.initialConnect();
         } else {
@@ -210,7 +210,6 @@ public class ProxiedPlayer implements CommandSender {
         }
 
         this.connection.setPacketHandler(new ConnectedUpstreamHandler(this));
-        // Determine forced host first
         ServerInfo initialServer = this.proxy.getForcedHostHandler().resolveForcedHost(this.loginData.getJoinHostname(), this);
         if (initialServer == null) {
             initialServer = this.proxy.getJoinHandler().determineServer(this);
@@ -221,7 +220,6 @@ public class ProxiedPlayer implements CommandSender {
             return;
         }
 
-        // Event should not change initial server. For we use join handler.
         InitialServerDeterminedEvent serverEvent = new InitialServerDeterminedEvent(this, initialServer);
         this.proxy.getEventManager().callEvent(serverEvent);
         this.connect(initialServer);
@@ -309,11 +307,9 @@ public class ProxiedPlayer implements CommandSender {
 
         this.setPendingConnection(connection);
 
-        connection.setCodecHelper(this.getProtocol().getCodec(),
-                this.connection.getPeer().getCodecHelper());
+        connection.setCodecHelper(this.getProtocol().getCodec(), this.connection.getPeer().getCodecHelper());
 
-        // Remove the BedrockPacketHandler part.
-        BedrockPacketHandler handler;
+        PacketHandler handler;
         if (this.clientConnection == null) {
             ((ConnectedUpstreamHandler) this.connection.getPacketHandler()).setTargetConnection(connection);
             this.hasUpstreamBridge = true;
@@ -329,5 +325,491 @@ public class ProxiedPlayer implements CommandSender {
             connection.sendPacket(this.loginData.getLoginPacket());
         }
 
-        this.getLogger().info("[{}|{}] -> Downstream [{}] has connected", connection.getSocketAddress(), this.getName(), targetServer.getServerName());
+        this.getLogger().info("[{}|{}] -> Downstream [{}] has connected",
+                connection.getSocketAddress(), this.getName(), targetServer.getServerName());
     }
+
+    private void connectFailure(ClientConnection connection, ServerInfo targetServer, Throwable error) {
+        if (connection != null) {
+            connection.disconnect();
+        }
+
+        if (this.disconnected.get()) {
+            return;
+        }
+
+        this.getLogger().error("[{}|{}] Unable to connect to downstream {}",
+                this.getAddress(), this.getName(), targetServer.getServerName(), error);
+        String exceptionMessage = Objects.requireNonNullElse(error.getLocalizedMessage(), error.getClass().getSimpleName());
+        if (this.sendToFallback(targetServer, ReconnectReason.EXCEPTION, exceptionMessage)) {
+            this.sendMessage(new TranslationContainer("waterdog.connected.fallback", targetServer.getServerName()));
+        } else {
+            this.disconnect(new TranslationContainer("waterdog.downstream.transfer.failed",
+                    targetServer.getServerName(), exceptionMessage));
+        }
+    }
+
+    /**
+     * Disconnects the player, showing no reason
+     */
+    public void disconnect() {
+        this.disconnect((String) null);
+    }
+
+    public void disconnect(TextContainer message) {
+        if (message instanceof TranslationContainer) {
+            this.disconnect(((TranslationContainer) message).getTranslated());
+        } else {
+            this.disconnect(message.getMessage());
+        }
+    }
+
+    /**
+     * Calls the PlayerDisconnectEvent and disconnects the player from downstream.
+     * Kicks the player with the provided reason and closes the connection
+     *
+     * @param reason The disconnect reason the player will see on his disconnect screen
+     */
+    public void disconnect(CharSequence reason) {
+        if (this.loginCalled.get() && !this.loginCompleted.get()) {
+            this.disconnectReason = reason;
+            return;
+        }
+
+        if (!this.disconnected.compareAndSet(false, true)) {
+            return;
+        }
+
+        this.disconnectReason = reason;
+        this.queuedTransferTarget = null;
+        this.transferSettleUntilNanos = 0L;
+
+        PlayerDisconnectedEvent event = new PlayerDisconnectedEvent(this, reason);
+        this.proxy.getEventManager().callEvent(event);
+
+        if (this.connection != null && this.connection.isConnected()) {
+            this.connection.disconnect(reason);
+        }
+
+        if (this.clientConnection != null) {
+            this.clientConnection.getServerInfo().removeConnection(this.clientConnection);
+            this.clientConnection.disconnect();
+        }
+
+        ClientConnection connection = this.getPendingConnection();
+        if (connection != null) {
+            connection.disconnect();
+        }
+
+        this.proxy.getPlayerManager().removePlayer(this);
+        this.getLogger().info("[{}|{}] -> Upstream has disconnected: {}", this.getAddress(), this.getName(), reason);
+    }
+
+    public boolean sendToFallback(ServerInfo oldServer, String message) {
+        return this.sendToFallback(oldServer, ReconnectReason.UNKNOWN, message);
+    }
+
+    /**
+     * Send player to fallback server if any exists.
+     */
+    public boolean sendToFallback(ServerInfo oldServer, ReconnectReason reason, String message) {
+        if (!this.isConnected()) {
+            return false;
+        }
+
+        ServerInfo fallbackServer = this.proxy.getReconnectHandler().getFallbackServer(this, oldServer, reason, message);
+        if (fallbackServer != null && fallbackServer != this.getServerInfo()) {
+            this.getLogger().debug("[{}] Connecting to fallback server {} with reason {}",
+                    this.getName(), fallbackServer.getServerName(), reason.getName());
+            this.connect(fallbackServer);
+            return true;
+        }
+        return false;
+    }
+
+    public final void onDownstreamTimeout(ServerInfo serverInfo) {
+        if (!this.sendToFallback(serverInfo, ReconnectReason.TIMEOUT, "Downstream Timeout")) {
+            this.disconnect(new TranslationContainer("waterdog.downstream.down", serverInfo.getServerName(), "Timeout"));
+        }
+    }
+
+    public final void onDownstreamDisconnected(ClientConnection connection) {
+        this.getLogger().info("[" + connection.getSocketAddress() + "|" + this.getName() + "] -> Downstream [" +
+                connection.getServerInfo().getServerName() + "] has disconnected");
+        if (this.getPendingConnection() == connection) {
+            this.setPendingConnection(null);
+        }
+    }
+
+    public void sendPacket(BedrockPacket packet) {
+        if (this.connection != null && this.connection.isConnected()) {
+            this.connection.sendPacket(packet);
+        }
+    }
+
+    public void sendPacketImmediately(BedrockPacket packet) {
+        if (this.connection != null && this.connection.isConnected()) {
+            this.connection.sendPacketImmediately(packet);
+        }
+    }
+
+    @Override
+    public void sendMessage(TextContainer message) {
+        if (message instanceof TranslationContainer) {
+            this.sendTranslation((TranslationContainer) message);
+        } else {
+            this.sendMessage(message.getMessage());
+        }
+    }
+
+    public void sendTranslation(TranslationContainer textContainer) {
+        this.sendMessage(this.proxy.translate(textContainer));
+    }
+
+    @Override
+    public void sendMessage(String message) {
+        if (message.trim().isEmpty()) {
+            return;
+        }
+
+        TextPacket packet = new TextPacket();
+        packet.setType(TextPacket.Type.RAW);
+        packet.setXuid(this.getXuid());
+        packet.setMessage(message);
+        this.sendPacket(packet);
+    }
+
+    public void chat(String message) {
+        if (message.trim().isEmpty()) {
+            return;
+        }
+
+        ClientConnection connection = this.getDownstreamConnection();
+        if (connection == null || !connection.isConnected()) {
+            return;
+        }
+
+        if (message.charAt(0) == '/') {
+            CommandRequestPacket packet = new CommandRequestPacket();
+            packet.setCommand(message);
+            packet.setCommandOriginData(new CommandOriginData(CommandOriginType.PLAYER, this.getUniqueId(), "", 0L));
+            packet.setInternal(false);
+            connection.sendPacket(packet);
+            return;
+        }
+
+        TextPacket packet = new TextPacket();
+        packet.setType(TextPacket.Type.CHAT);
+        packet.setSourceName(this.getName());
+        packet.setXuid(this.getXuid());
+        packet.setMessage(message);
+        connection.sendPacket(packet);
+    }
+
+    public void sendPopup(String message, String subtitle) {
+        TextPacket packet = new TextPacket();
+        packet.setType(TextPacket.Type.POPUP);
+        packet.setMessage(message);
+        packet.setXuid(this.getXuid());
+        this.sendPacket(packet);
+    }
+
+    public void sendTip(String message) {
+        TextPacket packet = new TextPacket();
+        packet.setType(TextPacket.Type.TIP);
+        packet.setMessage(message);
+        packet.setXuid(this.getXuid());
+        this.sendPacket(packet);
+    }
+
+    public void setSubtitle(String subtitle) {
+        SetTitlePacket packet = new SetTitlePacket();
+        packet.setType(SetTitlePacket.Type.SUBTITLE);
+        packet.setText(subtitle);
+        packet.setXuid(this.getXuid());
+        packet.setPlatformOnlineId("");
+        this.sendPacket(packet);
+    }
+
+    public void setTitleAnimationTimes(int fadein, int duration, int fadeout) {
+        SetTitlePacket packet = new SetTitlePacket();
+        packet.setType(SetTitlePacket.Type.TIMES);
+        packet.setFadeInTime(fadein);
+        packet.setStayTime(duration);
+        packet.setFadeOutTime(fadeout);
+        packet.setXuid(this.getXuid());
+        packet.setText("");
+        packet.setPlatformOnlineId("");
+        this.sendPacket(packet);
+    }
+
+    private void setTitle(String text) {
+        SetTitlePacket packet = new SetTitlePacket();
+        packet.setType(SetTitlePacket.Type.TITLE);
+        packet.setText(text);
+        packet.setXuid(this.getXuid());
+        packet.setPlatformOnlineId("");
+        this.sendPacket(packet);
+    }
+
+    public void clearTitle() {
+        SetTitlePacket packet = new SetTitlePacket();
+        packet.setType(SetTitlePacket.Type.CLEAR);
+        packet.setText("");
+        packet.setXuid(this.getXuid());
+        packet.setPlatformOnlineId("");
+        this.sendPacket(packet);
+    }
+
+    public void resetTitleSettings() {
+        SetTitlePacket packet = new SetTitlePacket();
+        packet.setType(SetTitlePacket.Type.RESET);
+        packet.setText("");
+        packet.setXuid(this.getXuid());
+        packet.setPlatformOnlineId("");
+        this.sendPacket(packet);
+    }
+
+    public void sendTitle(String title) {
+        this.sendTitle(title, null, 20, 20, 5);
+    }
+
+    public void sendTitle(String title, String subtitle) {
+        this.sendTitle(title, subtitle, 20, 20, 5);
+    }
+
+    public void sendTitle(String title, String subtitle, int fadeIn, int stay, int fadeOut) {
+        this.setTitleAnimationTimes(fadeIn, stay, fadeOut);
+        if (subtitle != null && !subtitle.trim().isEmpty()) {
+            this.setSubtitle(subtitle);
+        }
+        this.setTitle((title == null || title.isEmpty()) ? " " : title);
+    }
+
+    public void sendToastMessage(String title, String content) {
+        if (this.getProtocol().isBefore(ProtocolVersion.MINECRAFT_PE_1_19_0)) {
+            return;
+        }
+
+        ToastRequestPacket packet = new ToastRequestPacket();
+        packet.setTitle(title);
+        packet.setContent(content);
+        this.sendPacket(packet);
+    }
+
+    public void redirectServer(ServerInfo serverInfo) {
+        Preconditions.checkNotNull(serverInfo, "Server info can not be null!");
+        TransferPacket packet = new TransferPacket();
+        packet.setAddress(serverInfo.getPublicAddress().getHostString());
+        packet.setPort(serverInfo.getPublicAddress().getPort());
+        this.sendPacket(packet);
+    }
+
+    public boolean addPermission(String permission) {
+        return this.addPermission(new Permission(permission, true));
+    }
+
+    public boolean addPermission(Permission permission) {
+        Permission oldPerm = this.permissions.get(permission.getName());
+        if (oldPerm == null) {
+            this.permissions.put(permission.getName(), permission);
+            return true;
+        }
+        return oldPerm.getAtomicValue().getAndSet(permission.getValue()) != permission.getValue();
+    }
+
+    @Override
+    public boolean hasPermission(String permission) {
+        if (this.admin || permission.isEmpty()) {
+            return true;
+        }
+
+        Permission perm = this.permissions.get(permission.toLowerCase());
+        boolean result = perm != null && perm.getValue();
+
+        PlayerPermissionCheckEvent event = new PlayerPermissionCheckEvent(this, permission, result);
+        this.getProxy().getEventManager().callEvent(event);
+        return event.hasPermission();
+    }
+
+    public boolean removePermission(String permission) {
+        return this.permissions.remove(permission.toLowerCase()) != null;
+    }
+
+    public Permission getPermission(String permission) {
+        return this.permissions.get(permission.toLowerCase());
+    }
+
+    public Collection<Permission> getPermissions() {
+        return Collections.unmodifiableCollection(this.permissions.values());
+    }
+
+    @Override
+    public boolean isPlayer() {
+        return true;
+    }
+
+    public long getPing() {
+        return this.connection.getPing();
+    }
+
+    public ServerInfo getServerInfo() {
+        return this.clientConnection == null ? null : this.clientConnection.getServerInfo();
+    }
+
+    public InetSocketAddress getAddress() {
+        return this.connection == null ? null : (InetSocketAddress) this.connection.getSocketAddress();
+    }
+
+    @Override
+    public ProxyServer getProxy() {
+        return this.proxy;
+    }
+
+    public MainLogger getLogger() {
+        return this.proxy.getLogger();
+    }
+
+    public void setDownstreamConnection(ClientConnection connection) {
+        this.clientConnection = connection;
+        if (this.getPendingConnection() == connection) {
+            this.setPendingConnection(null);
+        }
+    }
+
+    public ClientConnection getDownstreamConnection() {
+        return this.clientConnection;
+    }
+
+    private synchronized ClientConnection getPendingConnection() {
+        return this.pendingConnection;
+    }
+
+    private synchronized void setPendingConnection(ClientConnection connection) {
+        this.pendingConnection = connection;
+    }
+
+    public boolean isTransferBusy() {
+        if (this.clientConnection == null) {
+            return false;
+        }
+
+        TransferCallback transferCallback = this.rewriteData.getTransferCallback();
+        return this.acceptPlayStatus
+                || this.getPendingConnection() != null
+                || (transferCallback != null && transferCallback.getPhase() != TransferCallback.TransferPhase.RESET)
+                || System.nanoTime() < this.transferSettleUntilNanos;
+    }
+
+    public synchronized void queueTransfer(ServerInfo targetServer) {
+        if (targetServer != null) {
+            this.queuedTransferTarget = targetServer;
+        }
+    }
+
+    public synchronized ServerInfo consumeQueuedTransfer() {
+        ServerInfo targetServer = this.queuedTransferTarget;
+        this.queuedTransferTarget = null;
+        return targetServer;
+    }
+
+    public void armTransferSettleWindow() {
+        this.transferSettleUntilNanos = System.nanoTime() + TRANSFER_SETTLE_NANOS;
+    }
+
+    public void flushQueuedTransfer() {
+        ServerInfo targetServer = this.consumeQueuedTransfer();
+        if (targetServer == null || !this.isConnected()) {
+            return;
+        }
+
+        this.getProxy().getScheduler().scheduleDelayed(() -> {
+            if (this.isConnected()) {
+                this.connect(targetServer);
+            }
+        }, 10);
+    }
+
+    public Collection<ServerInfo> getPendingServers() {
+        return Collections.unmodifiableCollection(this.pendingServers);
+    }
+
+    public ServerInfo getConnectingServer() {
+        return this.pendingConnection == null ? null : this.pendingConnection.getServerInfo();
+    }
+
+    public boolean isConnected() {
+        return !this.disconnected.get() && this.connection != null && this.connection.isConnected();
+    }
+
+    @Override
+    public String getName() {
+        return this.loginData.getDisplayName();
+    }
+
+    public UUID getUniqueId() {
+        return this.loginData.getUuid();
+    }
+
+    public String getXuid() {
+        return this.loginData.getXuid();
+    }
+
+    public Platform getDevicePlatform() {
+        return this.loginData.getDevicePlatform();
+    }
+
+    public String getDeviceModel() {
+        return this.loginData.getDeviceModel();
+    }
+
+    public String getDeviceId() {
+        return this.loginData.getDeviceId();
+    }
+
+    public ProtocolVersion getProtocol() {
+        return this.loginData.getProtocol();
+    }
+
+    public boolean canRewrite() {
+        return this.canRewrite;
+    }
+
+    public boolean hasUpstreamBridge() {
+        return this.hasUpstreamBridge;
+    }
+
+    public Collection<UUID> getPlayers() {
+        return this.players;
+    }
+
+    public boolean acceptPlayStatus() {
+        return this.acceptPlayStatus;
+    }
+
+    public boolean acceptResourcePacks() {
+        return this.acceptResourcePacks;
+    }
+
+    public boolean acceptItemComponentPacket() {
+        return this.acceptItemComponentPacket;
+    }
+
+    public String getDisconnectReason() {
+        return this.getDisconnectReason(String.class);
+    }
+
+    public <T extends CharSequence> T getDisconnectReason(Class<T> type) {
+        return type.cast(this.disconnectReason);
+    }
+
+    @Override
+    public String toString() {
+        return "ProxiedPlayer(displayName=" + this.getName() +
+                ", protocol=" + this.getProtocol() +
+                ", connected=" + this.isConnected() +
+                ", address=" + this.getAddress() +
+                ", serverInfo=" + this.getServerInfo() +
+                ")";
+    }
+}
