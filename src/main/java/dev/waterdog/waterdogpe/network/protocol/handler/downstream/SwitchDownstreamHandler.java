@@ -133,6 +133,8 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
 
     @Override
     public PacketSignal handle(NetworkChunkPublisherUpdatePacket packet) {
+        // 先不要用这个包做 fallback 触发。
+        // 它来得太早，之前已经验证过会把 BDS transfer 提前完成并导致会话异常。
         return PacketSignal.UNHANDLED;
     }
 
@@ -259,6 +261,15 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
         if (fastTransfer) {
             Vector3f fakePosition = packet.getPlayerPosition().add(2000, 0, 2000);
 
+            log.info(
+                    "[{}] Starting fast transfer to {} (oldDim={}, targetDim={}, fakeDim={})",
+                    this.player.getName(),
+                    this.connection.getServerInfo().getServerName(),
+                    rewriteData.getDimension(),
+                    packet.getDimensionId(),
+                    newDimension
+            );
+
             injectPosition(
                     this.player.getConnection(),
                     fakePosition,
@@ -277,10 +288,21 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
                     true
             );
 
+            // 这里非常关键：
+            // 原版/之前的补丁会在 40 tick 后给客户端 sendPacketImmediately 一个假的 PLAYER_SPAWN。
+            // 从你最新日志看，崩溃时间点正好对上这个定时任务。
+            // 对 BDS 场景先彻底禁用它，只保留真实的 downstream ready 信号来完成 phase2。
+
             this.player.getProxy().getScheduler().scheduleDelayed(() -> {
-                PlayStatusPacket statusPacket = new PlayStatusPacket();
-                statusPacket.setStatus(PlayStatusPacket.Status.PLAYER_SPAWN);
-                this.player.getConnection().sendPacketImmediately(statusPacket);
+                TransferCallback callback = this.player.getRewriteData().getTransferCallback();
+                if (callback != null) {
+                    log.info(
+                            "[{}] Transfer watchdog after 40 ticks: phase={} server={}",
+                            this.player.getName(),
+                            callback.getPhase(),
+                            this.connection.getServerInfo().getServerName()
+                    );
+                }
             }, 40);
 
         } else if (newDimension == packet.getDimensionId()) {
