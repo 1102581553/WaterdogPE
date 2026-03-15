@@ -86,38 +86,49 @@ public abstract class AbstractDownstreamHandler implements ProxyPacketHandler {
         if (!this.player.getProxy().getConfiguration().injectCommands()) {
             return PacketSignal.UNHANDLED;
         }
-        int sizeBefore = packet.getCommands().size();
 
-        for (Command command : this.player.getProxy().getCommandMap().getCommands().values()) {
-            if (command.getPermission() == null || this.player.hasPermission(command.getPermission())) {
-                packet.getCommands().add(command.getCommandData());
+        List<CommandData> merged = new ArrayList<>(packet.getCommands().size() + 16);
+        Set<String> seenNames = new HashSet<>();
+
+        for (CommandData downstreamCommand : packet.getCommands()) {
+            CommandData sanitized = this.sanitizeCommandData(downstreamCommand);
+            if (seenNames.add(sanitized.getName().toLowerCase(Locale.ROOT))) {
+                merged.add(sanitized);
             }
         }
 
-        if (packet.getCommands().size() == sizeBefore) {
-            return PacketSignal.UNHANDLED;
-        }
-
-        // Some server commands are missing aliases, which protocol lib doesn't like
-        ListIterator<CommandData> iterator = packet.getCommands().listIterator();
-        while (iterator.hasNext()) {
-            CommandData command = iterator.next();
-            if (command.getAliases() != null) {
+        for (Command command : this.player.getProxy().getCommandMap().getCommands().values()) {
+            if (command.getPermission() != null && !this.player.hasPermission(command.getPermission())) {
                 continue;
             }
 
-            Map<String, Set<CommandEnumConstraint>> aliases = new LinkedHashMap<>();
-            aliases.put(command.getName(), EnumSet.of(CommandEnumConstraint.ALLOW_ALIASES));
-
-            iterator.set(new CommandData(command.getName(),
-                    command.getDescription(),
-                    command.getFlags(),
-                    command.getPermission(),
-                    new CommandEnumData(command.getName() + "_aliases", aliases, false),
-                    Collections.emptyList(),
-                    command.getOverloads()));
+            CommandData sanitized = this.sanitizeCommandData(command.getCommandData());
+            if (seenNames.add(sanitized.getName().toLowerCase(Locale.ROOT))) {
+                merged.add(sanitized);
+            }
         }
+
+        packet.getCommands().clear();
+        packet.getCommands().addAll(merged);
         return PacketSignal.HANDLED;
+    }
+
+    private CommandData sanitizeCommandData(CommandData command) {
+        CommandEnumData aliases = command.getAliases();
+        if (aliases == null) {
+            Map<String, Set<CommandEnumConstraint>> values = new LinkedHashMap<>();
+            values.put(command.getName(), EnumSet.of(CommandEnumConstraint.ALLOW_ALIASES));
+            aliases = new CommandEnumData(command.getName() + "_aliases", values, false);
+        }
+
+        List subcommands = command.getSubcommands() == null ? Collections.emptyList() : command.getSubcommands();
+        return new CommandData(command.getName(),
+                command.getDescription(),
+                command.getFlags(),
+                command.getPermission(),
+                aliases,
+                subcommands,
+                command.getOverloads());
     }
 
     @Override
