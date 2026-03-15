@@ -16,7 +16,6 @@
 
 package dev.waterdog.waterdogpe.network.protocol.handler;
 
-import dev.waterdog.waterdogpe.event.defaults.PostTransferCompleteEvent;
 import dev.waterdog.waterdogpe.event.defaults.TransferCompleteEvent;
 import dev.waterdog.waterdogpe.network.connection.client.ClientConnection;
 import dev.waterdog.waterdogpe.network.connection.handler.ReconnectReason;
@@ -70,7 +69,10 @@ public class TransferCallback {
                 break;
 
             case PHASE_2:
-                this.completeTransferPhase2();
+                if (!this.completeTransferPhase2()) {
+                    this.transferPhase = RESET;
+                    return false;
+                }
                 this.transferPhase = RESET;
                 break;
 
@@ -82,11 +84,10 @@ public class TransferCallback {
 
     /**
      * BDS compatibility fallback:
-     * Some BDS transfers reach a point where downstream is already ready to send world data,
-     * but client does not deliver the second DIMENSION_CHANGE_SUCCESS in time.
-     * If we are already in PHASE_2, allow downstream "ready" packets to complete the transfer.
+     * If downstream is already sending world data but the client does not deliver
+     * the second DIMENSION_CHANGE_SUCCESS in time, allow PHASE_2 to finish.
      */
-    public boolean onServerReadySignal(String reason, boolean firePostTransferEvent) {
+    public boolean onServerReadySignal(String reason) {
         if (this.transferPhase != PHASE_2) {
             return false;
         }
@@ -100,11 +101,6 @@ public class TransferCallback {
         if (!this.completeTransferPhase2()) {
             this.transferPhase = RESET;
             return false;
-        }
-
-        if (firePostTransferEvent) {
-            PostTransferCompleteEvent event = new PostTransferCompleteEvent(this.connection, this.player);
-            this.player.getProxy().getEventManager().callEvent(event);
         }
 
         this.transferPhase = RESET;
