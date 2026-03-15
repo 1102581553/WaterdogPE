@@ -217,7 +217,7 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
         }
         bossbars.clear();
 
-        Collection<?> playerList = this.player.getPlayers();
+        Collection<java.util.UUID> playerList = this.player.getPlayers();
         injectRemoveAllPlayers(this.player.getConnection(), playerList);
         playerList.clear();
 
@@ -227,7 +227,7 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
         }
         entities.clear();
 
-        Long2ObjectMap<?> scoreInfos = this.player.getScoreInfos();
+        Long2ObjectMap<org.cloudburstmc.protocol.bedrock.data.ScoreInfo> scoreInfos = this.player.getScoreInfos();
         injectRemoveScoreInfos(this.player.getConnection(), scoreInfos);
         scoreInfos.clear();
 
