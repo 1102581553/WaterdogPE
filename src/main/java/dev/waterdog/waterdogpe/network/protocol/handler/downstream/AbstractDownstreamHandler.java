@@ -6,6 +6,7 @@ import dev.waterdog.waterdogpe.network.protocol.ProtocolVersion;
 import dev.waterdog.waterdogpe.network.protocol.Signals;
 import dev.waterdog.waterdogpe.network.protocol.command.AvailableCommandsNormalizer;
 import dev.waterdog.waterdogpe.network.protocol.handler.ProxyPacketHandler;
+import dev.waterdog.waterdogpe.network.protocol.handler.TransferCallback;
 import dev.waterdog.waterdogpe.network.protocol.rewrite.RewriteMaps;
 import dev.waterdog.waterdogpe.player.ProxiedPlayer;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
@@ -21,8 +22,17 @@ import org.cloudburstmc.protocol.bedrock.packet.CameraPresetsPacket;
 import org.cloudburstmc.protocol.bedrock.packet.ChangeDimensionPacket;
 import org.cloudburstmc.protocol.bedrock.packet.ChunkRadiusUpdatedPacket;
 import org.cloudburstmc.protocol.bedrock.packet.ClientCacheMissResponsePacket;
+import org.cloudburstmc.protocol.bedrock.packet.ClientToServerHandshakePacket;
+import org.cloudburstmc.protocol.bedrock.packet.DisconnectPacket;
 import org.cloudburstmc.protocol.bedrock.packet.ItemComponentPacket;
+import org.cloudburstmc.protocol.bedrock.packet.LevelChunkPacket;
+import org.cloudburstmc.protocol.bedrock.packet.NetworkChunkPublisherUpdatePacket;
 import org.cloudburstmc.protocol.bedrock.packet.PlayStatusPacket;
+import org.cloudburstmc.protocol.bedrock.packet.ResourcePackClientResponsePacket;
+import org.cloudburstmc.protocol.bedrock.packet.ResourcePackStackPacket;
+import org.cloudburstmc.protocol.bedrock.packet.ResourcePacksInfoPacket;
+import org.cloudburstmc.protocol.bedrock.packet.ServerToClientHandshakePacket;
+import org.cloudburstmc.protocol.bedrock.packet.StartGamePacket;
 import org.cloudburstmc.protocol.common.NamedDefinition;
 import org.cloudburstmc.protocol.common.PacketSignal;
 import org.cloudburstmc.protocol.common.SimpleDefinitionRegistry;
@@ -40,6 +50,15 @@ public abstract class AbstractDownstreamHandler implements ProxyPacketHandler {
     public AbstractDownstreamHandler(ProxiedPlayer player, ClientConnection connection) {
         this.player = player;
         this.connection = connection;
+    }
+
+    @Override
+    public PacketSignal handlePacket(BedrockPacket packet) {
+        if (this.isTransferQuarantineActive() && !this.isAllowedDuringFastTransfer(packet)) {
+            return Signals.CANCEL;
+        }
+
+        return ProxyPacketHandler.super.handlePacket(packet);
     }
 
     @Override
@@ -174,6 +193,38 @@ public abstract class AbstractDownstreamHandler implements ProxyPacketHandler {
     @Override
     public ClientConnection getConnection() {
         return connection;
+    }
+
+    protected boolean isTransferQuarantineActive() {
+        if (this.player.getRewriteData() == null || this.player.getRewriteData().getTransferCallback() == null) {
+            return false;
+        }
+
+        return this.player.getRewriteData().getTransferCallback().getPhase() != TransferCallback.TransferPhase.RESET;
+    }
+
+    protected boolean isAllowedDuringFastTransfer(BedrockPacket packet) {
+        return packet instanceof ServerToClientHandshakePacket
+                || packet instanceof ClientToServerHandshakePacket
+                || packet instanceof ResourcePacksInfoPacket
+                || packet instanceof ResourcePackStackPacket
+                || packet instanceof ResourcePackClientResponsePacket
+                || packet instanceof StartGamePacket
+                || packet instanceof PlayStatusPacket
+                || packet instanceof DisconnectPacket
+                || packet instanceof ChangeDimensionPacket
+                || packet instanceof ChunkRadiusUpdatedPacket
+                || packet instanceof ClientCacheMissResponsePacket
+                || packet instanceof LevelChunkPacket
+                || packet instanceof NetworkChunkPublisherUpdatePacket
+                || packet instanceof ItemComponentPacket
+                || packet instanceof CameraPresetsPacket
+                || isPacketSimpleName(packet, "SubChunkPacket")
+                || isPacketSimpleName(packet, "UpdateSubChunkBlocksPacket");
+    }
+
+    private static boolean isPacketSimpleName(BedrockPacket packet, String simpleName) {
+        return packet.getClass().getSimpleName().equals(simpleName);
     }
 
     protected void setItemDefinitions(Collection<ItemDefinition> definitions) {
