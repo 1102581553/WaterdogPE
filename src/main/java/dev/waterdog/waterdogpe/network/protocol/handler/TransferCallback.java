@@ -1,3 +1,16 @@
+/*
+ * Copyright 2022 WaterdogTEAM
+ * Licensed under the GNU General Public License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package dev.waterdog.waterdogpe.network.protocol.handler;
 
 import dev.waterdog.waterdogpe.event.defaults.TransferCompleteEvent;
@@ -42,10 +55,13 @@ public class TransferCallback {
     public boolean onDimChangeSuccess() {
         switch (this.transferPhase) {
             case PHASE_1:
+                // First dimension change was completed successfully.
                 this.onTransferPhase1Completed();
                 this.transferPhase = PHASE_2;
                 break;
             case PHASE_2:
+                // At this point dimension change sequence was completed.
+                // We can finally fully initialize connection.
                 this.onTransferPhase2Completed();
                 this.transferPhase = RESET;
                 break;
@@ -62,6 +78,7 @@ public class TransferCallback {
             return;
         }
 
+        // Send second dim-change to correct dimension
         Vector3f fakePosition = rewriteData.getSpawnPosition().add(-2000, 0, -2000);
         injectPosition(this.player.getConnection(), fakePosition, rewriteData.getRotation(), rewriteData.getEntityId());
 
@@ -91,20 +108,16 @@ public class TransferCallback {
 
         this.connection.setPacketHandler(new ConnectedDownstreamHandler(player, this.connection));
 
-        // 先设好 upstream 指向新连接，再 flush 队列
+        this.player.getConnection().setTransferQueueActive(false);
         if (this.player.getConnection().getPacketHandler() instanceof ConnectedUpstreamHandler handler) {
             handler.setTargetConnection(this.connection);
         }
-
-        // 所有 handler 就绪后再释放队列
-        this.player.getConnection().setTransferQueueActive(false);
 
         TransferCompleteEvent event = new TransferCompleteEvent(this.sourceServer, this.connection, this.player);
         this.player.getProxy().getEventManager().callEvent(event);
     }
 
     public void onTransferFailed() {
-        this.player.getRewriteData().setTransferCallback(null);
         if (this.player.sendToFallback(this.targetServer, ReconnectReason.TRANSFER_FAILED, "Disconnected")) {
             this.player.sendMessage(new TranslationContainer("waterdog.connected.fallback", this.targetServer.getServerName()));
         } else {
