@@ -1,24 +1,19 @@
-/*
- * Copyright 2022 WaterdogTEAM
- * Licensed under the GNU General Public License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package dev.waterdog.waterdogpe.command;
 
 import lombok.Getter;
-import org.cloudburstmc.protocol.bedrock.data.command.*;
+import org.cloudburstmc.protocol.bedrock.data.command.CommandData;
+import org.cloudburstmc.protocol.bedrock.data.command.CommandEnumConstraint;
+import org.cloudburstmc.protocol.bedrock.data.command.CommandEnumData;
+import org.cloudburstmc.protocol.bedrock.data.command.CommandOverloadData;
+import org.cloudburstmc.protocol.bedrock.data.command.CommandParam;
+import org.cloudburstmc.protocol.bedrock.data.command.CommandParamData;
+import org.cloudburstmc.protocol.bedrock.data.command.CommandPermission;
 
-import java.util.*;
+import java.util.Collections;
+import java.util.EnumSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Base class for proxy commands
@@ -78,24 +73,30 @@ public abstract class Command {
     }
 
     private CommandData buildNetworkData() {
-        // Create command aliases
+        String commandName = sanitizeRequiredString(this.name, "wdproxy");
+        String description = sanitizeOptionalString(this.getDescription());
+
         Map<String, Set<CommandEnumConstraint>> aliases = new LinkedHashMap<>();
-        aliases.put(this.name, EnumSet.of(CommandEnumConstraint.ALLOW_ALIASES));
+        aliases.put(commandName, EnumSet.of(CommandEnumConstraint.ALLOW_ALIASES));
 
         for (String alias : this.settings.getAliases()) {
-            aliases.put(alias, EnumSet.of(CommandEnumConstraint.ALLOW_ALIASES));
+            alias = sanitizeAlias(alias);
+            if (alias != null && !aliases.containsKey(alias)) {
+                aliases.put(alias, EnumSet.of(CommandEnumConstraint.ALLOW_ALIASES));
+            }
         }
 
-        // Build command parameters
-        CommandOverloadData[] overloads = this.buildCommandOverloads();
+        CommandOverloadData[] overloads = sanitizeOverloads(this.buildCommandOverloads());
 
-        return new CommandData(this.name,
-                this.getDescription(),
+        return new CommandData(
+                commandName,
+                description,
                 Collections.emptySet(),
                 CommandPermission.ANY,
-                new CommandEnumData(this.name + "_aliases", aliases, false),
+                new CommandEnumData(commandName + "_aliases", aliases, false),
                 Collections.emptyList(),
-                overloads);
+                overloads
+        );
     }
 
     protected CommandOverloadData[] buildCommandOverloads() {
@@ -103,6 +104,73 @@ public abstract class Command {
         simpleData.setName("args");
         simpleData.setOptional(true);
         simpleData.setType(CommandParam.TEXT);
-        return new CommandOverloadData[]{new CommandOverloadData(false, new CommandParamData[]{simpleData})};
+
+        return new CommandOverloadData[]{
+                new CommandOverloadData(false, new CommandParamData[]{simpleData})
+        };
+    }
+
+    private static CommandOverloadData[] sanitizeOverloads(CommandOverloadData[] overloads) {
+        if (overloads == null || overloads.length == 0) {
+            CommandParamData param = new CommandParamData();
+            param.setName("args");
+            param.setOptional(true);
+            param.setType(CommandParam.TEXT);
+
+            return new CommandOverloadData[]{
+                    new CommandOverloadData(false, new CommandParamData[]{param})
+            };
+        }
+
+        for (int i = 0; i < overloads.length; i++) {
+            CommandOverloadData overload = overloads[i];
+
+            if (overload == null || overload.getOverloads() == null) {
+                overloads[i] = new CommandOverloadData(false, new CommandParamData[0]);
+                continue;
+            }
+
+            CommandParamData[] params = overload.getOverloads();
+            for (int j = 0; j < params.length; j++) {
+                CommandParamData param = params[j];
+
+                if (param == null) {
+                    param = new CommandParamData();
+                    params[j] = param;
+                }
+
+                if (param.getName() == null || param.getName().isBlank()) {
+                    param.setName("arg" + j);
+                }
+
+                if (param.getType() == null && param.getEnumData() == null && param.getPostfix() == null) {
+                    param.setType(CommandParam.TEXT);
+                }
+            }
+        }
+
+        return overloads;
+    }
+
+    private static String sanitizeRequiredString(String value, String fallback) {
+        if (value == null) {
+            return fallback;
+        }
+
+        value = value.trim();
+        return value.isEmpty() ? fallback : value;
+    }
+
+    private static String sanitizeOptionalString(String value) {
+        return value == null ? "" : value;
+    }
+
+    private static String sanitizeAlias(String value) {
+        if (value == null) {
+            return null;
+        }
+
+        value = value.trim();
+        return value.isEmpty() ? null : value;
     }
 }
