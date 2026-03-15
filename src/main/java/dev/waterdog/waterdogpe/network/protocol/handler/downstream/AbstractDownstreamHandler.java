@@ -218,6 +218,7 @@ public abstract class AbstractDownstreamHandler implements ProxyPacketHandler {
                 || packet instanceof LevelChunkPacket
                 || packet instanceof NetworkChunkPublisherUpdatePacket
                 || packet instanceof ItemComponentPacket
+                || packet instanceof RemoveEntityPacket
                 || packet instanceof CameraPresetsPacket
                 || isPacketSimpleName(packet, "SubChunkPacket")
                 || isPacketSimpleName(packet, "UpdateSubChunkBlocksPacket");
