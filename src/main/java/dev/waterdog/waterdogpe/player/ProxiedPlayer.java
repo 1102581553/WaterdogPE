@@ -50,6 +50,7 @@ import org.cloudburstmc.protocol.common.util.Preconditions;
 
 import java.net.InetSocketAddress;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -89,9 +90,13 @@ public class ProxiedPlayer implements CommandSender {
     @Getter
     private final LongSet chunkBlobs = LongSets.synchronize(new LongOpenHashSet());
     private final Object2ObjectMap<String, Permission> permissions = new Object2ObjectOpenHashMap<>();
+    private static final long TRANSFER_SETTLE_NANOS = TimeUnit.MILLISECONDS.toNanos(400);
+
     private final Collection<ServerInfo> pendingServers = ObjectCollections.synchronize(new ObjectArrayList<>());
     private ClientConnection clientConnection;
     private ClientConnection pendingConnection;
+    private volatile ServerInfo queuedTransferTarget;
+    private volatile long transferSettleUntilNanos = 0L;
 
 
     /**
@@ -244,6 +249,12 @@ public class ProxiedPlayer implements CommandSender {
             return;
         }
 
+        if (this.clientConnection != null && this.isTransferBusy()) {
+            this.queueTransfer(targetServer);
+            this.sendMessage(new TranslationContainer("waterdog.downstream.connecting", targetServer.getServerName()));
+            return;
+        }
+
         if (this.pendingServers.contains(targetServer)) {
             this.sendMessage(new TranslationContainer("waterdog.downstream.connecting", targetServer.getServerName()));
             return;
@@ -371,6 +382,8 @@ public class ProxiedPlayer implements CommandSender {
         }
 
         this.disconnectReason = reason;
+        this.queuedTransferTarget = null;
+        this.transferSettleUntilNanos = 0L;
 
         PlayerDisconnectedEvent event = new PlayerDisconnectedEvent(this, reason);
         this.proxy.getEventManager().callEvent(event);
@@ -799,6 +812,48 @@ public class ProxiedPlayer implements CommandSender {
 
     private synchronized void setPendingConnection(ClientConnection connection) {
         this.pendingConnection = connection;
+    }
+
+
+    public boolean isTransferBusy() {
+        if (this.clientConnection == null) {
+            return false;
+        }
+
+        TransferCallback transferCallback = this.rewriteData.getTransferCallback();
+        return this.acceptPlayStatus
+                || this.getPendingConnection() != null
+                || (transferCallback != null && transferCallback.getPhase() != TransferCallback.TransferPhase.RESET)
+                || System.nanoTime() < this.transferSettleUntilNanos;
+    }
+
+    public synchronized void queueTransfer(ServerInfo targetServer) {
+        if (targetServer != null) {
+            this.queuedTransferTarget = targetServer;
+        }
+    }
+
+    public synchronized ServerInfo consumeQueuedTransfer() {
+        ServerInfo targetServer = this.queuedTransferTarget;
+        this.queuedTransferTarget = null;
+        return targetServer;
+    }
+
+    public void armTransferSettleWindow() {
+        this.transferSettleUntilNanos = System.nanoTime() + TRANSFER_SETTLE_NANOS;
+    }
+
+    public void flushQueuedTransfer() {
+        ServerInfo targetServer = this.consumeQueuedTransfer();
+        if (targetServer == null || !this.isConnected()) {
+            return;
+        }
+
+        this.getProxy().getScheduler().scheduleDelayed(() -> {
+            if (this.isConnected()) {
+                this.connect(targetServer);
+            }
+        }, 10);
     }
 
     public Collection<ServerInfo> getPendingServers() {
