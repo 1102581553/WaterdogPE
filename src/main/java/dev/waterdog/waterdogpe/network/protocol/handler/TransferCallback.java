@@ -1,9 +1,12 @@
 /*
  * Copyright 2022 WaterdogTEAM
+ *
  * Licensed under the GNU General Public License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
+ *
  * https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -13,23 +16,30 @@
 
 package dev.waterdog.waterdogpe.network.protocol.handler;
 
+import dev.waterdog.waterdogpe.event.defaults.PostTransferCompleteEvent;
 import dev.waterdog.waterdogpe.event.defaults.TransferCompleteEvent;
 import dev.waterdog.waterdogpe.network.connection.client.ClientConnection;
 import dev.waterdog.waterdogpe.network.connection.handler.ReconnectReason;
 import dev.waterdog.waterdogpe.network.protocol.handler.downstream.ConnectedDownstreamHandler;
 import dev.waterdog.waterdogpe.network.protocol.handler.upstream.ConnectedUpstreamHandler;
-import dev.waterdog.waterdogpe.network.serverinfo.ServerInfo;
 import dev.waterdog.waterdogpe.network.protocol.rewrite.types.RewriteData;
+import dev.waterdog.waterdogpe.network.serverinfo.ServerInfo;
 import dev.waterdog.waterdogpe.player.ProxiedPlayer;
 import dev.waterdog.waterdogpe.utils.types.TranslationContainer;
 import org.cloudburstmc.math.vector.Vector3f;
 import org.cloudburstmc.protocol.bedrock.packet.SetLocalPlayerAsInitializedPacket;
 import org.cloudburstmc.protocol.bedrock.packet.StopSoundPacket;
 
-import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.*;
-import static dev.waterdog.waterdogpe.network.protocol.handler.TransferCallback.TransferPhase.*;
+import static dev.waterdog.waterdogpe.network.protocol.handler.TransferCallback.TransferPhase.PHASE_1;
+import static dev.waterdog.waterdogpe.network.protocol.handler.TransferCallback.TransferPhase.PHASE_2;
+import static dev.waterdog.waterdogpe.network.protocol.handler.TransferCallback.TransferPhase.RESET;
+import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.determineDimensionId;
+import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectDimensionChange;
+import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectEntityImmobile;
+import static dev.waterdog.waterdogpe.network.protocol.user.PlayerRewriteUtils.injectPosition;
 
 public class TransferCallback {
+
     public enum TransferPhase {
         RESET,
         PHASE_1,
@@ -55,38 +65,76 @@ public class TransferCallback {
     public boolean onDimChangeSuccess() {
         switch (this.transferPhase) {
             case PHASE_1:
-                // First dimension change was completed successfully.
                 this.onTransferPhase1Completed();
                 this.transferPhase = PHASE_2;
                 break;
+
             case PHASE_2:
-                // At this point dimension change sequence was completed.
-                // We can finally fully initialize connection.
-                this.onTransferPhase2Completed();
+                this.completeTransferPhase2();
                 this.transferPhase = RESET;
                 break;
+
             default:
                 return false;
         }
         return true;
     }
 
+    /**
+     * BDS compatibility fallback:
+     * Some BDS transfers reach a point where downstream is already ready to send world data,
+     * but client does not deliver the second DIMENSION_CHANGE_SUCCESS in time.
+     * If we are already in PHASE_2, allow downstream "ready" packets to complete the transfer.
+     */
+    public boolean onServerReadySignal(String reason, boolean firePostTransferEvent) {
+        if (this.transferPhase != PHASE_2) {
+            return false;
+        }
+
+        this.player.getLogger().info(
+                "Completing transfer of " + this.player.getName()
+                        + " to " + this.targetServer.getServerName()
+                        + " using fallback signal: " + reason
+        );
+
+        if (!this.completeTransferPhase2()) {
+            this.transferPhase = RESET;
+            return false;
+        }
+
+        if (firePostTransferEvent) {
+            PostTransferCompleteEvent event = new PostTransferCompleteEvent(this.connection, this.player);
+            this.player.getProxy().getEventManager().callEvent(event);
+        }
+
+        this.transferPhase = RESET;
+        return true;
+    }
+
     private void onTransferPhase1Completed() {
         RewriteData rewriteData = this.player.getRewriteData();
+
         injectEntityImmobile(this.player.getConnection(), rewriteData.getEntityId(), true);
+
         if (rewriteData.getDimension() == this.targetDimension) {
             return;
         }
 
-        // Send second dim-change to correct dimension
         Vector3f fakePosition = rewriteData.getSpawnPosition().add(-2000, 0, -2000);
         injectPosition(this.player.getConnection(), fakePosition, rewriteData.getRotation(), rewriteData.getEntityId());
 
         rewriteData.setDimension(determineDimensionId(rewriteData.getDimension(), this.targetDimension));
-        injectDimensionChange(this.player.getConnection(), rewriteData.getDimension(), rewriteData.getSpawnPosition(), rewriteData.getEntityId(), this.player.getProtocol(), true);
+        injectDimensionChange(
+                this.player.getConnection(),
+                rewriteData.getDimension(),
+                rewriteData.getSpawnPosition(),
+                rewriteData.getEntityId(),
+                this.player.getProtocol(),
+                true
+        );
     }
 
-    private void onTransferPhase2Completed() {
+    private boolean completeTransferPhase2() {
         RewriteData rewriteData = this.player.getRewriteData();
         rewriteData.setTransferCallback(null);
 
@@ -95,38 +143,63 @@ public class TransferCallback {
         soundPacket.setStoppingAllSound(true);
         this.player.sendPacketImmediately(soundPacket);
 
-        injectPosition(this.player.getConnection(), rewriteData.getSpawnPosition(), rewriteData.getRotation(), rewriteData.getEntityId());
+        injectPosition(
+                this.player.getConnection(),
+                rewriteData.getSpawnPosition(),
+                rewriteData.getRotation(),
+                rewriteData.getEntityId()
+        );
 
         if (!this.connection.isConnected()) {
             this.onTransferFailed();
-            return;
+            return false;
         }
 
         SetLocalPlayerAsInitializedPacket initializedPacket = new SetLocalPlayerAsInitializedPacket();
         initializedPacket.setRuntimeEntityId(this.player.getRewriteData().getOriginalEntityId());
         this.connection.sendPacket(initializedPacket);
 
-        this.connection.setPacketHandler(new ConnectedDownstreamHandler(player, this.connection));
+        this.connection.setPacketHandler(new ConnectedDownstreamHandler(this.player, this.connection));
 
-        // === 官方正确顺序：先释放队列，再切换 target ===
-        this.player.getConnection().setTransferQueueActive(false);
         if (this.player.getConnection().getPacketHandler() instanceof ConnectedUpstreamHandler handler) {
             handler.setTargetConnection(this.connection);
         }
 
+        this.player.getConnection().setTransferQueueActive(false);
+
         TransferCompleteEvent event = new TransferCompleteEvent(this.sourceServer, this.connection, this.player);
         this.player.getProxy().getEventManager().callEvent(event);
+
+        this.player.armTransferSettleWindow();
+        this.player.flushQueuedTransfer();
+
+        return true;
     }
 
     public void onTransferFailed() {
+        RewriteData rewriteData = this.player.getRewriteData();
+        if (rewriteData.getTransferCallback() == this) {
+            rewriteData.setTransferCallback(null);
+        }
+
+        this.player.getConnection().setTransferQueueActive(false);
+
         if (this.player.sendToFallback(this.targetServer, ReconnectReason.TRANSFER_FAILED, "Disconnected")) {
             this.player.sendMessage(new TranslationContainer("waterdog.connected.fallback", this.targetServer.getServerName()));
         } else {
-            this.player.disconnect(new TranslationContainer("waterdog.downstream.transfer.failed", targetServer.getServerName(), "Server was closed"));
+            this.player.disconnect(new TranslationContainer(
+                    "waterdog.downstream.transfer.failed",
+                    this.targetServer.getServerName(),
+                    "Server was closed"
+            ));
         }
 
         this.connection.disconnect();
-        this.player.getLogger().warning("Failed to transfer " + this.player.getName() + " to " + this.targetServer.getServerName() + ": Server was closed");
+        this.player.getLogger().warning(
+                "Failed to transfer " + this.player.getName()
+                        + " to " + this.targetServer.getServerName()
+                        + ": Server was closed"
+        );
     }
 
     public TransferPhase getPhase() {
