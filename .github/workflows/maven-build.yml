@@ -24,7 +24,7 @@ jobs:
         uses: ./.github/actions/build
         with:
           repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          perform_deploy: ${{ env.DOCKER_DEPLOY }}
+          perform_deploy: 'false'
           deploy_repository: "waterdog-snapshots"
           deploy_username: ${{ secrets.DEPLOY_USERNAME }}
           deploy_password: ${{ secrets.DEPLOY_PASSWORD }}
