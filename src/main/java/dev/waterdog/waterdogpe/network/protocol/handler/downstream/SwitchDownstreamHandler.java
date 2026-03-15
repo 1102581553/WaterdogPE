@@ -31,7 +31,6 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.objects.ObjectSet;
 import lombok.extern.log4j.Log4j2;
-import org.cloudburstmc.math.vector.Vector3f;
 import org.cloudburstmc.protocol.bedrock.packet.ClientToServerHandshakePacket;
 import org.cloudburstmc.protocol.bedrock.packet.DisconnectPacket;
 import org.cloudburstmc.protocol.bedrock.packet.LevelChunkPacket;
@@ -244,7 +243,6 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
 
         this.connection.sendPacket(this.player.getLoginData().getChunkRadius());
 
-        // 关键修复：先保存真实源维度，再计算临时维度
         int sourceDimension = rewriteData.getDimension();
         int targetDimension = packet.getDimensionId();
         int newDimension = determineDimensionId(sourceDimension, targetDimension);
@@ -260,81 +258,31 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
         rewriteData.setDimension(newDimension);
         rewriteData.setTransferCallback(transferCallback);
 
-        boolean fastTransfer = event.isTransferScreenAllowed() && newDimension != targetDimension;
+        log.info(
+                "[{}] Starting direct transfer to {} (oldDim={}, targetDim={})",
+                this.player.getName(),
+                this.connection.getServerInfo().getServerName(),
+                sourceDimension,
+                targetDimension
+        );
 
-        if (fastTransfer) {
-            Vector3f fakePosition = packet.getPlayerPosition().add(2000, 0, 2000);
+        injectPosition(
+                this.player.getConnection(),
+                packet.getPlayerPosition(),
+                packet.getRotation(),
+                rewriteData.getEntityId()
+        );
 
-            log.info(
-                    "[{}] Starting fast transfer to {} (oldDim={}, targetDim={}, fakeDim={})",
-                    this.player.getName(),
-                    this.connection.getServerInfo().getServerName(),
-                    sourceDimension,
-                    targetDimension,
-                    newDimension
-            );
+        injectDimensionChange(
+                this.player.getConnection(),
+                targetDimension,
+                packet.getPlayerPosition(),
+                rewriteData.getEntityId(),
+                this.player.getProtocol(),
+                false
+        );
 
-            injectPosition(
-                    this.player.getConnection(),
-                    fakePosition,
-                    packet.getRotation(),
-                    rewriteData.getEntityId()
-            );
-
-            this.player.getConnection().setTransferQueueActive(true);
-
-            injectDimensionChange(
-                    this.player.getConnection(),
-                    newDimension,
-                    fakePosition,
-                    rewriteData.getEntityId(),
-                    this.player.getProtocol(),
-                    true
-            );
-
-            this.player.getProxy().getScheduler().scheduleDelayed(() -> {
-                TransferCallback callback = this.player.getRewriteData().getTransferCallback();
-                if (callback != null) {
-                    log.info(
-                            "[{}] Transfer watchdog after 40 ticks: phase={} server={}",
-                            this.player.getName(),
-                            callback.getPhase(),
-                            this.connection.getServerInfo().getServerName()
-                    );
-                }
-            }, 40);
-
-        } else if (newDimension == targetDimension) {
-            injectPosition(
-                    this.player.getConnection(),
-                    packet.getPlayerPosition(),
-                    packet.getRotation(),
-                    rewriteData.getEntityId()
-            );
-
-            injectDimensionChange(
-                    this.player.getConnection(),
-                    newDimension,
-                    packet.getPlayerPosition(),
-                    rewriteData.getEntityId(),
-                    this.player.getProtocol(),
-                    false
-            );
-
-            transferCallback.onDimChangeSuccess();
-
-        } else {
-            injectPosition(
-                    this.player.getConnection(),
-                    packet.getPlayerPosition(),
-                    packet.getRotation(),
-                    rewriteData.getEntityId()
-            );
-
-            rewriteData.setDimension(targetDimension);
-            transferCallback.onDimChangeSuccess();
-            transferCallback.onDimChangeSuccess();
-        }
+        transferCallback.onDimChangeSuccess();
 
         return Signals.CANCEL;
     }
@@ -367,10 +315,10 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
         }
 
         log.info(
-            "[{}] Scheduling fallback transfer completion using {} from {}",
-            this.player.getName(),
-            reason,
-            this.connection.getServerInfo().getServerName()
+                "[{}] Scheduling fallback transfer completion using {} from {}",
+                this.player.getName(),
+                reason,
+                this.connection.getServerInfo().getServerName()
         );
 
         this.player.getProxy().getScheduler().scheduleDelayed(() -> {
@@ -381,10 +329,10 @@ public class SwitchDownstreamHandler extends AbstractDownstreamHandler {
                         && this.connection.isConnected()) {
                     if (callback.onServerReadySignal(reason)) {
                         log.info(
-                            "[{}] Completed transfer using {} from {}",
-                            this.player.getName(),
-                            reason,
-                            this.connection.getServerInfo().getServerName()
+                                "[{}] Completed transfer using {} from {}",
+                                this.player.getName(),
+                                reason,
+                                this.connection.getServerInfo().getServerName()
                         );
                     }
                 }
