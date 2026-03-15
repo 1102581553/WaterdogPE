@@ -67,6 +67,9 @@ public class ConnectedDownstreamHandler extends AbstractDownstreamHandler {
 
         PostTransferCompleteEvent event = new PostTransferCompleteEvent(this.connection, this.player);
         this.player.getProxy().getEventManager().callEvent(event);
+
+        this.player.armTransferSettleWindow();
+        this.player.flushQueuedTransfer();
         return PacketSignal.UNHANDLED;
     }
 
@@ -85,7 +88,11 @@ public class ConnectedDownstreamHandler extends AbstractDownstreamHandler {
         this.player.getProxy().getEventManager().callEvent(event);
 
         if (!event.isCancelled() && event.getServerInfo() != null) {
-            this.player.connect(event.getServerInfo());
+            if (this.player.isTransferBusy()) {
+                this.player.queueTransfer(event.getServerInfo());
+            } else {
+                this.player.connect(event.getServerInfo());
+            }
             return Signals.CANCEL;
         }
         return PacketSignal.UNHANDLED;
