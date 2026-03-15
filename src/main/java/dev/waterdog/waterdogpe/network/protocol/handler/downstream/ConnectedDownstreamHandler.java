@@ -15,18 +15,22 @@
 
 package dev.waterdog.waterdogpe.network.protocol.handler.downstream;
 
-import dev.waterdog.waterdogpe.network.connection.client.ClientConnection;
-import dev.waterdog.waterdogpe.network.connection.handler.ReconnectReason;
-import dev.waterdog.waterdogpe.network.protocol.handler.PluginPacketHandler;
-import org.cloudburstmc.protocol.bedrock.PacketDirection;
-import org.cloudburstmc.protocol.bedrock.packet.*;
 import dev.waterdog.waterdogpe.event.defaults.FastTransferRequestEvent;
 import dev.waterdog.waterdogpe.event.defaults.PostTransferCompleteEvent;
+import dev.waterdog.waterdogpe.network.connection.client.ClientConnection;
+import dev.waterdog.waterdogpe.network.connection.handler.ReconnectReason;
+import dev.waterdog.waterdogpe.network.protocol.Signals;
+import dev.waterdog.waterdogpe.network.protocol.handler.PluginPacketHandler;
 import dev.waterdog.waterdogpe.network.protocol.rewrite.types.RewriteData;
 import dev.waterdog.waterdogpe.network.serverinfo.ServerInfo;
 import dev.waterdog.waterdogpe.player.ProxiedPlayer;
-import dev.waterdog.waterdogpe.network.protocol.Signals;
 import dev.waterdog.waterdogpe.utils.types.TranslationContainer;
+import org.cloudburstmc.protocol.bedrock.PacketDirection;
+import org.cloudburstmc.protocol.bedrock.packet.BedrockPacket;
+import org.cloudburstmc.protocol.bedrock.packet.DisconnectPacket;
+import org.cloudburstmc.protocol.bedrock.packet.PlayStatusPacket;
+import org.cloudburstmc.protocol.bedrock.packet.SetLocalPlayerAsInitializedPacket;
+import org.cloudburstmc.protocol.bedrock.packet.TransferPacket;
 import org.cloudburstmc.protocol.common.PacketSignal;
 
 import static dev.waterdog.waterdogpe.network.protocol.Signals.mergeSignals;
@@ -40,6 +44,10 @@ public class ConnectedDownstreamHandler extends AbstractDownstreamHandler {
 
     @Override
     public PacketSignal handlePacket(BedrockPacket packet) {
+        if (this.isTransferQuarantineActive() && !this.isAllowedDuringFastTransfer(packet)) {
+            return Signals.CANCEL;
+        }
+
         PacketSignal signal = super.handlePacket(packet);
         if (!player.getPluginPacketHandlers().isEmpty()) {
             for (PluginPacketHandler handler : this.player.getPluginPacketHandlers()) {
@@ -57,6 +65,7 @@ public class ConnectedDownstreamHandler extends AbstractDownstreamHandler {
 
         this.player.setAcceptPlayStatus(false);
         RewriteData rewriteData = this.player.getRewriteData();
+
         if (!rewriteData.hasImmobileFlag()) {
             injectEntityImmobile(this.player.getConnection(), rewriteData.getEntityId(), false);
         }
@@ -69,7 +78,15 @@ public class ConnectedDownstreamHandler extends AbstractDownstreamHandler {
         this.player.getProxy().getEventManager().callEvent(event);
 
         this.player.armTransferSettleWindow();
-        this.player.flushQueuedTransfer();
+
+        this.player.getProxy().getScheduler().scheduleDelayed(() -> {
+            if (this.player.isConnected()
+                    && this.player.getConnection() != null
+                    && this.player.getConnection().isConnected()) {
+                this.player.flushQueuedTransfer();
+            }
+        }, 1);
+
         return PacketSignal.UNHANDLED;
     }
 
