@@ -71,6 +71,11 @@ public class ConnectedUpstreamHandler extends AbstractUpstreamHandler implements
 
     @Override
     public final PacketSignal handle(TextPacket packet) {
+        String normalizedCommand = this.normalizeCommand(packet.getMessage());
+        if (normalizedCommand != null && this.player.getProxy().handlePlayerCommand(this.player, normalizedCommand)) {
+            return Signals.CANCEL;
+        }
+
         PlayerChatEvent event = new PlayerChatEvent(this.player, packet.getMessage());
         ProxyServer.getInstance().getEventManager().callEvent(event);
         packet.setMessage(event.getMessage());
@@ -82,8 +87,8 @@ public class ConnectedUpstreamHandler extends AbstractUpstreamHandler implements
 
     @Override
     public final PacketSignal handle(CommandRequestPacket packet) {
-        String message = packet.getCommand();
-        if (this.player.getProxy().handlePlayerCommand(this.player, message)) {
+        String message = this.normalizeCommand(packet.getCommand());
+        if (message != null && this.player.getProxy().handlePlayerCommand(this.player, message)) {
             return Signals.CANCEL;
         }
         return PacketSignal.UNHANDLED;
@@ -95,6 +100,19 @@ public class ConnectedUpstreamHandler extends AbstractUpstreamHandler implements
             this.player.getChunkBlobs().addAll(packet.getNaks());
         }
         return PacketSignal.UNHANDLED;
+    }
+
+
+    private String normalizeCommand(String message) {
+        if (message == null) {
+            return null;
+        }
+
+        String normalized = message.trim();
+        if (normalized.isEmpty() || normalized.charAt(0) != '/') {
+            return normalized.isEmpty() ? null : "/" + normalized;
+        }
+        return normalized;
     }
 
     @Override
