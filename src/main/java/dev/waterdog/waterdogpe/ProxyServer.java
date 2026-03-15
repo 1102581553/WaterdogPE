@@ -386,10 +386,24 @@ public class ProxyServer {
     }
 
     public boolean handlePlayerCommand(ProxiedPlayer player, String message) {
-        if (!this.commandMap.handleMessage(player, message)) {
+        if (message == null) {
             return false;
         }
-        return this.dispatchCommand(player, message.substring(this.commandMap.getCommandPrefix().length()));
+
+        String normalized = message.trim();
+        if (normalized.isEmpty()) {
+            return false;
+        }
+
+        String prefix = this.commandMap.getCommandPrefix();
+        if (!normalized.startsWith(prefix)) {
+            normalized = prefix + normalized;
+        }
+
+        if (!this.commandMap.handleMessage(player, normalized)) {
+            return false;
+        }
+        return this.dispatchCommand(player, normalized.substring(prefix.length()));
     }
 
     public boolean dispatchCommand(CommandSender sender, String message) {
