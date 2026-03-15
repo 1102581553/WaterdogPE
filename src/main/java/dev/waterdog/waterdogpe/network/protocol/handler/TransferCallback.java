@@ -107,6 +107,10 @@ public class TransferCallback {
         return true;
     }
 
+    /**
+     * 【你的核心要求】所有维度都按“相同维度逻辑”处理
+     * 无论 dim0→dim0、dim1→dim0、dim0→dim1……全部强制走清理
+     */
     private void onTransferPhase1Completed() {
         RewriteData rewriteData = this.player.getRewriteData();
 
@@ -116,22 +120,24 @@ public class TransferCallback {
 
         injectEntityImmobile(this.player.getConnection(), rewriteData.getEntityId(), true);
 
-        if (rewriteData.getDimension() == this.targetDimension) {
-            return;
-        }
+        // === 强制相同维度效果（永远 flip）===
+        // determineDimensionId(target, target) = 永远返回对立维度（0<->1）
+        // 这样 dim1→dim0 也和 dim0→dim0 一样触发完整实体卸载
+        int tempDimension = determineDimensionId(this.targetDimension, this.targetDimension);
 
         Vector3f fakePosition = rewriteData.getSpawnPosition().add(-2000, 0, -2000);
         injectPosition(this.player.getConnection(), fakePosition, rewriteData.getRotation(), rewriteData.getEntityId());
 
-        rewriteData.setDimension(determineDimensionId(rewriteData.getDimension(), this.targetDimension));
+        rewriteData.setDimension(tempDimension);
         injectDimensionChange(
                 this.player.getConnection(),
-                rewriteData.getDimension(),
+                tempDimension,
                 rewriteData.getSpawnPosition(),
                 rewriteData.getEntityId(),
                 this.player.getProtocol(),
-                true
+                true   // 发送 empty chunks + ACK
         );
+        // === 改动结束 ===
     }
 
     private boolean completeTransferPhase2() {
@@ -171,6 +177,19 @@ public class TransferCallback {
                     rewriteData.getRotation(),
                     rewriteData.getEntityId()
             );
+
+            // === fasttrans 维度快速纠正（phase2）===
+            // 把维度切回真实 targetDimension，不发多余 empty chunks
+            rewriteData.setDimension(this.targetDimension);
+            injectDimensionChange(
+                    this.player.getConnection(),
+                    this.targetDimension,
+                    rewriteData.getSpawnPosition(),
+                    rewriteData.getEntityId(),
+                    this.player.getProtocol(),
+                    false   // false = 超快，不重复发 chunks
+            );
+            // === 结束 ===
 
             if (!this.connection.isConnected()) {
                 this.onTransferFailed();
