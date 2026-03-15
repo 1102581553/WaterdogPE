@@ -108,6 +108,7 @@ public class TransferCallback {
 
         this.connection.setPacketHandler(new ConnectedDownstreamHandler(player, this.connection));
 
+        // === 官方正确顺序：先释放队列，再切换 target ===
         this.player.getConnection().setTransferQueueActive(false);
         if (this.player.getConnection().getPacketHandler() instanceof ConnectedUpstreamHandler handler) {
             handler.setTargetConnection(this.connection);
