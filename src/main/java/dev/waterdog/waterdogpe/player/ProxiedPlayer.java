@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+ * https://www.gnu.org/licenses/old-licenses/gpl-2.0.html  
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -65,7 +65,6 @@ import it.unimi.dsi.fastutil.objects.ObjectSet;
 import it.unimi.dsi.fastutil.objects.ObjectSets;
 import lombok.Getter;
 import lombok.Setter;
-import org.cloudburstmc.protocol.bedrock.BedrockPacketHandler;
 import org.cloudburstmc.protocol.bedrock.data.ScoreInfo;
 import org.cloudburstmc.protocol.bedrock.data.command.CommandOriginData;
 import org.cloudburstmc.protocol.bedrock.data.command.CommandOriginType;
@@ -269,7 +268,8 @@ public class ProxiedPlayer implements CommandSender {
             this.acceptResourcePacks = false;
             this.initialConnect();
         } else {
-            this.connection.setPacketHandler(new ResourcePacksHandler(this));
+            // 修改：使用 addPacketHandler 代替 setPacketHandler
+            this.connection.addPacketHandler(new ResourcePacksHandler(this));
             this.connection.sendPacket(event.getPacket());
         }
     }
@@ -284,7 +284,8 @@ public class ProxiedPlayer implements CommandSender {
             return;
         }
 
-        this.connection.setPacketHandler(new ConnectedUpstreamHandler(this));
+        // 修改：使用 addPacketHandler 代替 setPacketHandler
+        this.connection.addPacketHandler(new ConnectedUpstreamHandler(this));
 
         ServerInfo initialServer = this.proxy.getForcedHostHandler()
                 .resolveForcedHost(this.loginData.getJoinHostname(), this);
@@ -387,7 +388,8 @@ public class ProxiedPlayer implements CommandSender {
         this.setPendingConnection(connection);
         connection.setCodecHelper(this.getProtocol().getCodec(), this.connection.getPeer().getCodecHelper());
 
-        BedrockPacketHandler handler;
+        // 修改：直接使用处理器，不再依赖 BedrockPacketHandler 类型
+        Object handler;
         if (this.clientConnection == null) {
             ((ConnectedUpstreamHandler) this.connection.getPacketHandler()).setTargetConnection(connection);
             this.hasUpstreamBridge = true;
@@ -397,9 +399,9 @@ public class ProxiedPlayer implements CommandSender {
         }
 
         if (this.getProtocol().isAfterOrEqual(ProtocolVersion.MINECRAFT_PE_1_19_30)) {
-            connection.setPacketHandler(new CompressionInitHandler(this, connection, handler));
+            connection.addPacketHandler(new CompressionInitHandler(this, connection, handler));
         } else {
-            connection.setPacketHandler(handler);
+            connection.addPacketHandler((org.cloudburstmc.protocol.bedrock.handler.PacketHandler) handler);
             connection.sendPacket(this.loginData.getLoginPacket());
         }
 
